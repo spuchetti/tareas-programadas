@@ -1,0 +1,80 @@
+name: Ejecutar bot unificador-mensual
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 09 21 * *"   # Día 21 de cada mes a las 09 UTC (6am Argentina)
+
+jobs:
+  run-task:
+    runs-on: ubuntu-latest
+
+    env:
+      GDRIVE_JSON: ${{ secrets.GDRIVE_JSON }}
+      SMTP_TO_UNIFICADOR: ${{ secrets.SMTP_TO_UNIFICADOR }}
+      SMTP_TO_FV: ${{ secrets.SMTP_TO_FV }}
+      SMTP_FROM: ${{ secrets.SMTP_FROM }}
+      SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Mostrar hora actual del servidor
+        run: date
+
+      - name: Instalar Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias
+        run: |
+          pip install --upgrade pip
+          pip install \
+            google-api-python-client==2.121.0 \
+            google-auth==2.29.0 \
+            google-auth-oauthlib==1.2.0 \
+            google-auth-httplib2==0.2.0 \
+            httplib2==0.22.0 \
+            openpyxl==3.1.2 \
+
+      - name: Crear directorio para salida
+        run: mkdir -p generados
+
+      - name: Ejecutar unificador mensual
+        run: python src/unificador_mensual_bot.py
+
+      - name: Verificar archivo generado (nombre dinámico)
+        run: |
+          echo "📁 Buscando archivos CSV en 'generados/':"
+          ls -la "generados/" || true
+          
+          csv_count=$(find generados/ -name "*.csv" -type f | wc -l)
+          echo "📊 Archivos CSV encontrados: $csv_count"
+          
+          if [ $csv_count -gt 0 ]; then
+            echo "✅ Archivo(s) CSV generado(s) correctamente"
+            first_csv=$(find generados/ -name "*.csv" -type f | head -1)
+            echo "📋 Primer archivo: $first_csv"
+            ls -lh "$first_csv"
+            echo "📊 Filas: $(wc -l < "$first_csv")"
+          else
+            echo "❌ No se generó ningún archivo CSV"
+            exit 1
+          fi
+
+      - name: Subir CSV generado a artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unificado-mensual-$(date +%Y-%m)
+          path: generados/*.csv
+          retention-days: 30
+
+      - name: Mostrar finalización
+        run: |
+          echo "✅ Unificador mensual ejecutado."
+          echo "📊 Archivo(s) CSV generado(s) en directorio 'generados/'"
+          echo "📧 Email enviado"
+          echo "📦 Artifact disponible para descarga"
