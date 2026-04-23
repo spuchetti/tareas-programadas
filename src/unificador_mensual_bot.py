@@ -713,7 +713,36 @@ def extraer_y_preparar_datos_mes(drive, archivos_excel):
             print(f"   ❌ {error_msg}")
             errores.append(error_msg)
     
+<<<<<<< HEAD
     return datos_mes, archivos_procesados, filas_totales, errores
+=======
+    # Guardar archivo CSV de reporte de aportantes
+    ruta_reporte = None
+    if datos_reporte_aportantes:
+        # Ordenar por código
+        datos_reporte_aportantes.sort(key=lambda x: x[0])
+        
+        # Guardar archivo CSV
+        anio_actual = obtener_anio(periodo)
+        mes_formateado = nombre_mes(MES_ACTUAL)
+        nombre_reporte = f"Aportantes_{mes_formateado}{anio_actual}.csv"
+        carpeta = crear_directorio_salida()
+        ruta_reporte = os.path.join(carpeta, nombre_reporte)
+        
+        with open(ruta_reporte, 'w', encoding='utf-8', newline='') as f:
+            f.write("Codigo|Reparticion|Cantidad\n")
+            for codigo, nombre, aportantes in datos_reporte_aportantes:
+                # Limpiar caracteres problemáticos
+                codigo_limpio = codigo.replace('|', '-')
+                nombre_limpio = nombre.replace('|', '-')
+                f.write(f"{codigo_limpio}|{nombre_limpio}|{aportantes}\n")
+        
+        print(f"\n✅ Reporte de aportantes guardado: {nombre_reporte}")
+        print(f"   Total reparticiones procesadas: {len(datos_reporte_aportantes)}")
+    
+    return datos_mes, archivos_procesados, filas_totales, errores, sumatorias_por_tipo, sumatorias_directas_periodo, datos_reporte_aportantes, ruta_reporte
+
+>>>>>>> ddd92db (cron fv-automático y unificador mensual v.7)
 
 def combinar_con_existente(csv_existente, datos_nuevos):
     """

@@ -748,6 +748,77 @@ def generar_html_resumen_unificador(periodos, fecha, cantidades_por_periodo, ani
     </div>
                         '''
     
+<<<<<<< HEAD
+=======
+    # ── Sección Top 10 aportantes por repartición ──────────────────────────
+    aportantes_html = ""
+    if aportantes_por_periodo:
+        TOP_N = 10
+        for periodo in periodos:
+            datos = aportantes_por_periodo.get(periodo, [])
+            if not datos:
+                continue
+
+            # Ordenar por cantidad de aportantes (mayor a menor)
+            datos_ordenados = sorted(datos, key=lambda x: x[2], reverse=True)
+            
+            periodo_label = nombre_mes(periodo) if periodo not in ["1° sac","2° sac","1º sac","2º sac"] else periodo.upper().replace("º","°")
+            total_aportantes = sum(cantidad for _, _, cantidad in datos_ordenados)
+            total_reparticiones = len(datos_ordenados)
+            top = datos_ordenados[:TOP_N]
+            restantes = total_reparticiones - TOP_N
+
+            filas_top = ""
+            for i, (codigo, reparticion, cantidad) in enumerate(top):
+                bg = "#f9fafb" if i % 2 == 0 else "#ffffff"
+                filas_top += f"""
+                <tr style="background:{bg};">
+                    <td style="padding:5px 8px; color:#6b7280; font-size:12px; text-align:center;">{codigo}</td>
+                    <td style="padding:5px 8px; font-size:13px; text-align:center;">{reparticion}</td>
+                    <td style="padding:5px 8px; text-align:center; font-size:13px;">{formatear_numero(cantidad)}</td>
+                  </tr>"""
+
+            pie_tabla = ""
+            if restantes > 0:
+                pie_tabla = f"""
+                <tr>
+                    <td colspan="3" style="padding:7px 8px; font-size:12px; color:#6b7280; border-top:1px dashed #d0d7de; text-align:center;">
+                        +{restantes} reparticiones más · Ver detalle completo en el CSV adjunto
+                    </td>
+                  </tr>"""
+
+            aportantes_html += f"""
+    <!-- TOP 10 APORTANTES - {periodo_label} -->
+    <div style="margin-bottom:22px;">
+        <div style="border:1px solid #dcdfe3; border-radius:6px; overflow:hidden;">
+
+            <div style="background:#f3f4f6; padding:10px 12px; border-bottom:1px solid #dcdfe3; text-align:center;">
+                <span style="font-weight:700; font-size:14px;">Aportantes</span>
+            </div>
+
+            <div style="padding:8px 12px; font-size:12px; color:#374151; border-bottom:1px dashed #d0d7de; text-align:center;">
+                Total: <strong>{formatear_numero(total_aportantes)}</strong> aportantes
+                &nbsp;·&nbsp; Mostrando Top {min(TOP_N, total_reparticiones)}
+            </div>
+
+            <table style="width:100%; border-collapse:collapse;">
+                <thead>
+                    <tr style="background:#e5e7eb;">
+                        <th style="padding:6px 8px; text-align:center; font-size:12px; color:#374151; font-weight:600;">Código</th>
+                        <th style="padding:6px 8px; text-align:center; font-size:12px; color:#374151; font-weight:600;">Repartición</th>
+                        <th style="padding:6px 8px; text-align:center; font-size:12px; color:#374151; font-weight:600;">Cantidad</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {filas_top}
+                    {pie_tabla}
+                </tbody>
+              </table>
+
+        </div>
+    </div>"""
+
+>>>>>>> ddd92db (cron fv-automático y unificador mensual v.7)
     html = f"""<!DOCTYPE html>
 <html lang="es">
 <head>
