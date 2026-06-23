@@ -2,8 +2,17 @@ name: Ejecutar bot unificador-mensual
 
 on:
   workflow_dispatch:
+    inputs:
+      mes:
+        description: 'Mes a procesar (ej: 04, 11, 06, 12, 1º sac, 2º sac). Dejar vacío para mes anterior automático.'
+        required: false
+        default: ''
+      anio:
+        description: 'Año a procesar (ej: 2024, 2025). Dejar vacío para año automático.'
+        required: false
+        default: ''
   schedule:
-    - cron: "0 09 21 * *"   # Día 21 de cada mes a las 09 UTC (6am Argentina)
+    - cron: "0 07 21 * *"   # Día 21 de cada mes a las 07 UTC (4am Argentina)
 
 jobs:
   run-task:
@@ -44,6 +53,9 @@ jobs:
 
       - name: Ejecutar unificador mensual
         run: python src/unificador_mensual_bot.py
+        env:
+          MES_OVERRIDE: ${{ github.event.inputs.mes }}
+          ANIO_OVERRIDE: ${{ github.event.inputs.anio }}
 
       - name: Verificar archivo generado (nombre dinámico)
         run: |

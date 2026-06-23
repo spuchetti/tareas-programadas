@@ -27,7 +27,7 @@ def enviar_email_html_con_adjuntos(asunto, html, lista_adjuntos=None, env_destin
     if lista_adjuntos is None:
         lista_adjuntos = []
     
-    # Obtener configuraciones desde variables de entorno
+    # Obtiene las configuraciones desde variables de entorno
     mail_to = os.getenv(env_destinatario)  # destinatario
     mail_from = os.getenv("SMTP_FROM")
     smtp_password = os.getenv("SMTP_PASSWORD")
@@ -478,7 +478,7 @@ def obtener_reparticiones_unicas_csv(ruta_csv):
         return [], 0
 
 
-def generar_html_resumen_unificador(periodos, fecha, cantidades_por_periodo, anio_actual, sumatorias_por_periodo=None):
+def generar_html_resumen_unificador(periodos, fecha, cantidades_por_periodo, anio_actual, sumatorias_por_periodo=None, aportantes_por_periodo=None, total_dnis_unicos_por_periodo=None):
     """
     Genera HTML para el unificador mensual con el formato especificado.
     AHORA LA SECCIÓN DE REPARTICIONES PROCESADAS USA LA COLUMNA 25 (CÓDIGO).
@@ -489,6 +489,7 @@ def generar_html_resumen_unificador(periodos, fecha, cantidades_por_periodo, ani
         cantidades_por_periodo: Diccionario {periodo: cantidad}
         anio_actual: Año actual (int)
         sumatorias_por_periodo: Diccionario con sumatorias por período {periodo: {tipo_entidad: sumatorias}}
+        aportantes_por_periodo: Diccionario con datos de aportantes por período {periodo: [(codigo, nombre, cantidad), ...]}
     """
     
     periodos_html = ""
@@ -641,23 +642,23 @@ def generar_html_resumen_unificador(periodos, fecha, cantidades_por_periodo, ani
 
             <table style="width:100%; border-collapse:collapse; font-size:13px;">
                 <tr>
-                    <td>Créditos Asistenciales</td>
+                    <td style="padding:4px 0;">Créditos Asistenciales</td>
                     <td style="text-align:right;">{formatear_dinero(sumatorias_periodo['creditos_asistenciales'])}</td>
                 </tr>
                 <tr>
-                    <td>Fondo Voluntario</td>
+                    <td style="padding:4px 0;">Fondo Voluntario</td>
                     <td style="text-align:right;">{formatear_dinero(sumatorias_periodo['fondo_voluntario'])}</td>
                 </tr>
                 <tr>
-                    <td>Personal</td>
+                    <td style="padding:4px 0;">Personal</td>
                     <td style="text-align:right;">{formatear_dinero(sumatorias_periodo['personal'])}</td>
                 </tr>
                 <tr>
-                    <td>Adherente</td>
+                    <td style="padding:4px 0;">Adherente</td>
                     <td style="text-align:right;">{formatear_dinero(sumatorias_periodo['adherente'])}</td>
                 </tr>
                 <tr>
-                    <td>Patronal</td>
+                    <td style="padding:4px 0;">Patronal</td>
                     <td style="text-align:right;">{formatear_dinero(sumatorias_periodo['patronal'])}</td>
                 </tr>
 
@@ -684,12 +685,12 @@ def generar_html_resumen_unificador(periodos, fecha, cantidades_por_periodo, ani
     </div>
         '''
         
-        # Agregar desglose por tipo de entidad si hay datos
+        # Agregar desglose por tipo de entidad
         if sumatorias_por_periodo and periodo in sumatorias_por_periodo:
             sumatorias_tipo_periodo = sumatorias_por_periodo[periodo]
             
-            # Orden de los tipos que queremos mostrar
-            tipos_ordenados = ['Municipios', 'Comunas', 'Entes Descentralizados', 'Cajas Municipales', 'Escuela']
+            # Orden de los tipos de reparticiones
+            tipos_ordenados = ['Municipios', 'Comunas', 'Entes Descentralizados', 'Cajas Municipales', 'Escuela', 'Pasantias']
             
             # Verificar si hay algún tipo de entidad con datos
             tiene_datos = False
@@ -705,7 +706,7 @@ def generar_html_resumen_unificador(periodos, fecha, cantidades_por_periodo, ani
                         sumatorias = sumatorias_tipo_periodo[tipo_entidad]
                         
                         # Determinar si es el último elemento
-                        es_ultimo = (tipo_entidad == 'Escuela')
+                        es_ultimo = (tipo_entidad == tipos_ordenados[-1])
                         
                         periodos_html += f'''
     <!-- DESGLOSE {periodo_mostrar} - {tipo_entidad.upper()} -->
@@ -714,23 +715,23 @@ def generar_html_resumen_unificador(periodos, fecha, cantidades_por_periodo, ani
         
         <table style="width:50%; border-collapse:collapse; font-size:13px;">
             <tr>
-                <td>Créditos Asistenciales</td>
+                <td style="padding:4px 0;">Créditos Asistenciales</td>
                 <td style="text-align:right; font-weight:500;">{formatear_dinero(sumatorias['creditos_asistenciales'])}</td>
             </tr>
             <tr>
-                <td>Fondo Voluntario</td>
+                <td style="padding:4px 0;">Fondo Voluntario</td>
                 <td style="text-align:right; font-weight:500;">{formatear_dinero(sumatorias['fondo_voluntario'])}</td>
             </tr>
             <tr>
-                <td>Personal</td>
+                <td style="padding:4px 0;">Personal</td>
                 <td style="text-align:right; font-weight:500;">{formatear_dinero(sumatorias['personal'])}</td>
             </tr>
             <tr>
-                <td>Adherente</td>
+                <td style="padding:4px 0;">Adherente</td>
                 <td style="text-align:right; font-weight:500;">{formatear_dinero(sumatorias['adherente'])}</td>
             </tr>
             <tr>
-                <td>Patronal</td>
+                <td style="padding:4px 0;">Patronal</td>
                 <td style="text-align:right; font-weight:500;">{formatear_dinero(sumatorias['patronal'])}</td>
             </tr>
             <tr>
@@ -747,78 +748,76 @@ def generar_html_resumen_unificador(periodos, fecha, cantidades_por_periodo, ani
         </table>
     </div>
                         '''
-    
-<<<<<<< HEAD
-=======
-    # ── Sección Top 10 aportantes por repartición ──────────────────────────
-    aportantes_html = ""
-    if aportantes_por_periodo:
-        TOP_N = 10
-        for periodo in periodos:
+
+        # Tabla de aportantes
+        if aportantes_por_periodo:
+            TOP_N = 10
             datos = aportantes_por_periodo.get(periodo, [])
-            if not datos:
-                continue
+            if datos:
+                datos_ordenados = sorted(datos, key=lambda x: x[2], reverse=True)
 
-            # Ordenar por cantidad de aportantes (mayor a menor)
-            datos_ordenados = sorted(datos, key=lambda x: x[2], reverse=True)
-            
-            periodo_label = nombre_mes(periodo) if periodo not in ["1° sac","2° sac","1º sac","2º sac"] else periodo.upper().replace("º","°")
-            total_aportantes = sum(cantidad for _, _, cantidad in datos_ordenados)
-            total_reparticiones = len(datos_ordenados)
-            top = datos_ordenados[:TOP_N]
-            restantes = total_reparticiones - TOP_N
+                if periodo in ["1° sac", "2° sac", "1º sac", "2º sac"]:
+                    periodo_label = periodo.upper().replace("º", "°")
+                else:
+                    periodo_label = nombre_mes(periodo)
 
-            filas_top = ""
-            for i, (codigo, reparticion, cantidad) in enumerate(top):
-                bg = "#f9fafb" if i % 2 == 0 else "#ffffff"
-                filas_top += f"""
-                <tr style="background:{bg};">
-                    <td style="padding:5px 8px; color:#6b7280; font-size:12px; text-align:center;">{codigo}</td>
-                    <td style="padding:5px 8px; font-size:13px; text-align:center;">{reparticion}</td>
-                    <td style="padding:5px 8px; text-align:center; font-size:13px;">{formatear_numero(cantidad)}</td>
-                  </tr>"""
+                total_aportantes = sum(cantidad for _, _, cantidad in datos_ordenados)
+                # Si hay un conteo de DNIs únicos globales para este período, usarlo como total
+                if total_dnis_unicos_por_periodo and periodo in total_dnis_unicos_por_periodo:
+                    total_aportantes_mostrar = total_dnis_unicos_por_periodo[periodo]
+                else:
+                    total_aportantes_mostrar = total_aportantes
+                total_reparticiones = len(datos_ordenados)
+                top = datos_ordenados[:TOP_N]
+                restantes = total_reparticiones - TOP_N
 
-            pie_tabla = ""
-            if restantes > 0:
-                pie_tabla = f"""
-                <tr>
-                    <td colspan="3" style="padding:7px 8px; font-size:12px; color:#6b7280; border-top:1px dashed #d0d7de; text-align:center;">
-                        +{restantes} reparticiones más · Ver detalle completo en el CSV adjunto
-                    </td>
-                  </tr>"""
+                filas_top = ""
+                for codigo, reparticion, cantidad in top:
+                    filas_top += f"""
+                <tr style="border-bottom:1px solid #e5e7eb;">
+                    <td style="padding:8px 16px; font-size:13px; text-align:center; color:#374151;">{codigo}</td>
+                    <td style="padding:8px 16px; font-size:13px; text-align:center; color:#374151;">{reparticion}</td>
+                    <td style="padding:8px 16px; font-size:13px; text-align:center; color:#374151;">{formatear_numero(cantidad)}</td>
+                </tr>"""
 
-            aportantes_html += f"""
-    <!-- TOP 10 APORTANTES - {periodo_label} -->
-    <div style="margin-bottom:22px;">
-        <div style="border:1px solid #dcdfe3; border-radius:6px; overflow:hidden;">
+                periodos_html += f"""
+    <!-- TOP APORTANTES - {periodo_label} -->
+    <div style="margin:22px 0 10px 0; border:1px solid #e5e7eb; border-radius:8px; overflow:hidden;">
 
-            <div style="background:#f3f4f6; padding:10px 12px; border-bottom:1px solid #dcdfe3; text-align:center;">
-                <span style="font-weight:700; font-size:14px;">Aportantes</span>
-            </div>
-
-            <div style="padding:8px 12px; font-size:12px; color:#374151; border-bottom:1px dashed #d0d7de; text-align:center;">
-                Total: <strong>{formatear_numero(total_aportantes)}</strong> aportantes
-                &nbsp;·&nbsp; Mostrando Top {min(TOP_N, total_reparticiones)}
-            </div>
-
-            <table style="width:100%; border-collapse:collapse;">
-                <thead>
-                    <tr style="background:#e5e7eb;">
-                        <th style="padding:6px 8px; text-align:center; font-size:12px; color:#374151; font-weight:600;">Código</th>
-                        <th style="padding:6px 8px; text-align:center; font-size:12px; color:#374151; font-weight:600;">Repartición</th>
-                        <th style="padding:6px 8px; text-align:center; font-size:12px; color:#374151; font-weight:600;">Cantidad</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {filas_top}
-                    {pie_tabla}
-                </tbody>
-              </table>
-
+        <!-- TÍTULO -->
+        <div style="background:#e5e7eb; padding:12px 16px; text-align:center; border-bottom:1px solid #e5e7eb;">
+            <span style="font-size:15px; font-weight:700; color:#111827;">Aportantes</span>
         </div>
+
+        <!-- SUBTÍTULO -->
+        <div style="padding:8px 12px; font-size:12px; color:#374151; border-bottom:1px dashed #d0d7de; text-align:center;">
+            Total: <strong>{formatear_numero(total_aportantes)}</strong> aportantes
+            &nbsp;·&nbsp; Mostrando Top {min(TOP_N, total_reparticiones)}
+        </div>
+
+        <!-- TABLA -->
+        <table style="width:100%; border-collapse:collapse;">
+            <thead>
+                <tr style="background:#f3f4f6">
+                    <th style="padding:6px 8px;text-align:center;font-size:12px;color:#374151;font-weight:600">Código</th>
+                    <th style="padding:6px 8px;text-align:center;font-size:12px;color:#374151;font-weight:600">Repartición</th>
+                    <th style="padding:6px 8px;text-align:center;font-size:12px;color:#374151;font-weight:600">Cantidad</th>
+                </tr>
+            </thead>
+            <tbody>
+                {filas_top}
+            </tbody>
+            <tfoot>
+                <tr style="background:#f9fafb; border-top:1px solid #e5e7eb;">
+                    <td colspan="3" style="padding:10px 16px; font-size:12px; color:#9ca3af; text-align:center;">
+                        +{formatear_numero(restantes)} reparticiones más &nbsp;·&nbsp; Ver detalle completo en el CSV adjunto
+                    </td>
+                </tr>
+            </tfoot>
+        </table>
+
     </div>"""
 
->>>>>>> ddd92db (cron fv-automático y unificador mensual v.7)
     html = f"""<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -851,7 +850,6 @@ def generar_html_resumen_unificador(periodos, fecha, cantidades_por_periodo, ani
     </div>
 
 {periodos_html}
-
     <hr style="margin:18px 0;">
 
     <p style="font-size:0.9em; color:#555;">
@@ -869,4 +867,139 @@ def generar_html_resumen_unificador(periodos, fecha, cantidades_por_periodo, ani
 </body>
 </html>"""
     
+    return html
+
+
+def generar_html_resumen_anual(anio, archivos_procesados, resumen_por_mes, fecha):
+    """
+    Genera HTML para el reporte anual de fondo voluntario.
+
+    Args:
+        anio: Año procesado (int)
+        archivos_procesados: Total de archivos de Drive procesados (int)
+        resumen_por_mes: dict { "01": {"nombre": "Enero", "registros": N, "archivos": M}, ... }
+        fecha: Fecha de generación (str)
+    """
+    total_registros = sum(v["registros"] for v in resumen_por_mes.values())
+    meses_con_casos = sum(1 for v in resumen_por_mes.values() if v["registros"] > 0)
+
+    filas_meses = ""
+    for mes_num in sorted(resumen_por_mes.keys()):
+        r = resumen_por_mes[mes_num]
+        registros = r["registros"]
+        archivos  = r["archivos"]
+        color_fila  = "#f0f9f4" if registros > 0 else "#ffffff"
+        badge_color = "#16a085" if registros > 0 else "#9ca3af"
+        filas_meses += f"""
+                <tr style="border-bottom:1px solid #e5e7eb; background:{color_fila};">
+                    <td style="padding:9px 14px; font-size:13px; font-weight:600; color:#374151;">{r['nombre']}</td>
+                    <td style="padding:9px 14px; font-size:13px; text-align:center; color:#374151;">{archivos}</td>
+                    <td style="padding:9px 14px; font-size:13px; text-align:center;">
+                        <span style="
+                            background:{badge_color};
+                            color:white;
+                            padding:2px 10px;
+                            border-radius:12px;
+                            font-size:12px;
+                            font-weight:700;
+                        ">{registros}</span>
+                    </td>
+                </tr>"""
+
+    html = f"""<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="utf-8">
+    <title>Reporte Anual Fondo Voluntario {anio}</title>
+    <style>
+        body {{
+            font-family: Arial, Helvetica, sans-serif;
+            color: #222;
+            line-height: 1.4;
+            padding: 18px;
+        }}
+    </style>
+</head>
+
+<body>
+
+    <!-- CABECERA -->
+    <div style="
+        background: linear-gradient(90deg,#0a7bdc,#16a085);
+        padding: 18px;
+        border-radius: 8px;
+        color: white;
+        margin-bottom: 22px;
+    ">
+        <h2 style="margin:0;">🟢🔵 OSER - FONDO VOLUNTARIO</h2>
+        <div style="opacity:0.9; font-size:14px; margin-top:4px;">Reporte anual {anio}</div>
+    </div>
+
+    <!-- RESUMEN GENERAL -->
+    <table style="width:100%; border-collapse:collapse; margin-bottom:24px;">
+        <tr>
+            <td style="padding:10px 16px; background:#f3f4f6; border-radius:6px; text-align:center; width:33%;">
+                <div style="font-size:11px; color:#6b7280; text-transform:uppercase; letter-spacing:.5px;">Archivos procesados</div>
+                <div style="font-size:26px; font-weight:700; color:#1f4e79;">{archivos_procesados}</div>
+            </td>
+            <td style="width:2%;"></td>
+            <td style="padding:10px 16px; background:#f3f4f6; border-radius:6px; text-align:center; width:33%;">
+                <div style="font-size:11px; color:#6b7280; text-transform:uppercase; letter-spacing:.5px;">Meses con casos</div>
+                <div style="font-size:26px; font-weight:700; color:#1f4e79;">{meses_con_casos} / 12</div>
+            </td>
+            <td style="width:2%;"></td>
+            <td style="padding:10px 16px; background:#eef7f4; border-radius:6px; text-align:center; width:33%;">
+                <div style="font-size:11px; color:#6b7280; text-transform:uppercase; letter-spacing:.5px;">Total agentes detectados</div>
+                <div style="font-size:26px; font-weight:700; color:#16a085;">{total_registros}</div>
+            </td>
+        </tr>
+    </table>
+
+    <!-- TABLA POR MES -->
+    <div style="border:1px solid #e5e7eb; border-radius:8px; overflow:hidden; margin-bottom:24px;">
+
+        <div style="background:#1f4e79; padding:12px 16px;">
+            <span style="font-size:15px; font-weight:700; color:white;">📆 Detalle por mes</span>
+        </div>
+
+        <table style="width:100%; border-collapse:collapse;">
+            <thead>
+                <tr style="background:#f3f4f6;">
+                    <th style="padding:8px 14px; text-align:left;   font-size:12px; color:#374151; font-weight:600;">Mes</th>
+                    <th style="padding:8px 14px; text-align:center; font-size:12px; color:#374151; font-weight:600;">Reparticiones con casos</th>
+                    <th style="padding:8px 14px; text-align:center; font-size:12px; color:#374151; font-weight:600;">Registros detectados</th>
+                </tr>
+            </thead>
+            <tbody>
+                {filas_meses}
+            </tbody>
+            <tfoot>
+                <tr style="background:#eef7f4; border-top:2px solid #16a085;">
+                    <td style="padding:10px 14px; font-weight:700; font-size:13px;">TOTAL</td>
+                    <td style="text-align:center;"></td>
+                    <td style="padding:10px 14px; text-align:center; font-weight:700; font-size:15px; color:#16a085;">{total_registros}</td>
+                </tr>
+            </tfoot>
+        </table>
+    </div>
+
+    <p style="font-size:13px; color:#555;">
+        📎 El Excel adjunto contiene el detalle completo con una hoja por mes.
+    </p>
+
+    <hr style="margin:18px 0; border:none; border-top:1px solid #e5e7eb;">
+
+    <p style="font-size:0.85em; color:#888;">Generado: {fecha}</p>
+
+    <div style="text-align:right; margin-top:20px;">
+        <img
+            src="https://raw.githubusercontent.com/spuchetti/tareas-programadas/main/assets/robot.jpg"
+            width="140"
+            style="opacity:0.55;"
+        />
+    </div>
+
+</body>
+</html>"""
+
     return html

@@ -3,7 +3,7 @@ name: Ejecutar bot fv-drive-automatico
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 10 21 * *"   # Día 21 de cada mes a las 10 UTC (7am Argentina)
+    - cron: "0 08 21 * *"   # Día 21 de cada mes a las 08 UTC (5am Argentina)
 
 jobs:
   run-task:

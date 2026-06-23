@@ -1,0 +1,83 @@
+name: Ejecutar bot reporte-anual
+
+on:
+  workflow_dispatch:
+    inputs:
+      anio:
+        description: 'Año a procesar (ej: 2024, 2025)'
+        required: false
+        default: ''
+
+jobs:
+  run-task:
+    runs-on: ubuntu-latest
+
+    env:
+      GDRIVE_JSON: ${{ secrets.GDRIVE_JSON }}
+      SMTP_TO_UNIFICADOR: ${{ secrets.SMTP_TO_UNIFICADOR }}
+      SMTP_FROM: ${{ secrets.SMTP_FROM }}
+      SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Mostrar hora actual del servidor
+        run: date
+
+      - name: Instalar Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias
+        run: |
+          pip install --upgrade pip
+          pip install \
+            google-api-python-client==2.121.0 \
+            google-auth==2.29.0 \
+            google-auth-oauthlib==1.2.0 \
+            google-auth-httplib2==0.2.0 \
+            httplib2==0.22.0 \
+            openpyxl==3.1.2
+
+      - name: Crear directorio para salida
+        run: mkdir -p generados
+
+      - name: Ejecutar reporte anual
+        run: python src/reporte_anual_bot.py
+        env:
+          ANIO_OVERRIDE: ${{ github.event.inputs.anio }}
+
+      - name: Verificar archivo generado
+        run: |
+          echo "Buscando archivos Excel en 'generados/':"
+          ls -la "generados/" || true
+
+          xlsx_count=$(find generados/ -name "*.xlsx" -type f | wc -l)
+          echo "Archivos Excel encontrados: $xlsx_count"
+
+          if [ $xlsx_count -gt 0 ]; then
+            echo "Archivo(s) Excel generado(s) correctamente"
+            first_xlsx=$(find generados/ -name "*.xlsx" -type f | head -1)
+            echo "Primer archivo: $first_xlsx"
+            ls -lh "$first_xlsx"
+          else
+            echo "No se generó ningún archivo Excel"
+            exit 1
+          fi
+
+      - name: Subir Excel generado a artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reporte-anual-${{ github.event.inputs.anio || 'auto' }}
+          path: generados/*.xlsx
+          retention-days: 60
+
+      - name: Mostrar finalización
+        run: |
+          echo "Reporte anual ejecutado."
+          echo "Archivo(s) Excel generado(s) en directorio 'generados/'"
+          echo "Email enviado"
+          echo "Artifact disponible para descarga"

@@ -3,9 +3,9 @@ Unificador Mensual - Actualiza CSV consolidado en Drive agregando datos del mes 
 """
 """
 ======= EJECUCIÓN MANUAL =========
-Modificar/Revisar:
-MES_ACTUAL
-obtener_anio() -> anio_actual
+Usar workflow_dispatch en GitHub Actions con los inputs:
+  - mes:  ej: 04, 11, 06, 12, 1º sac, 2º sac  (vacío = mes anterior automático)
+  - anio: ej: 2024, 2025                        (vacío = año automático)
 
 enviar_email_html_adjuntos():
 "SMTP_TO_UNIFICADOR"(normal)
@@ -30,7 +30,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Luego el resto de imports
 from utils.common_utils import (
     registrar_inicio, registrar_resumen, 
-    nombre_mes, obtener_mes_anterior, obtener_anio
+    nombre_mes, obtener_mes_anterior, obtener_anio, crear_directorio_salida
 )
 from utils.drive_utils import (
     inicializar_drive, obtener_archivos, descargar_archivo,
@@ -43,7 +43,12 @@ from utils.gmail_utils import (
 )
 
 # Configuración
-MES_ACTUAL = obtener_mes_anterior()  # Mes que estamos procesando
+# Permite override manual vía workflow_dispatch inputs (MES_OVERRIDE y ANIO_OVERRIDE) por formulario UI.
+# Cuando corre por schedule, las variables llegan vacías y se usa la lógica automática.
+_mes_override = os.getenv("MES_OVERRIDE", "").strip()
+_anio_override = os.getenv("ANIO_OVERRIDE", "").strip()
+
+MES_ACTUAL = _mes_override if _mes_override else obtener_mes_anterior()  # Mes que estamos procesando
 
 
 def obtener_nombre_csv():
@@ -170,33 +175,47 @@ def extraer_datos_excel(fh, nombre_archivo, hoja_mes):
             fila_limpia = []
             for col_idx, cell in enumerate(row, start=1):
                 if cell is None:
-                    fila_limpia.append("")
+                    # Columnas numéricas (9-24): None → 0.00
+                    if col_idx >= 9:
+                        fila_limpia.append("0.00")
+                    else:
+                        fila_limpia.append("")
                 elif isinstance(cell, datetime):
                     fila_limpia.append(cell.strftime("%Y-%m-%d"))
                 else:
                     # Columnas A-H (1-8): formatear como texto
-                    if col_idx <= 8:  
-                        # Para columnas de texto
-                        if isinstance(cell, (int, float)):
-                            # Si es número (CUIL/DNI), eliminar decimales innecesarios
+                    if col_idx <= 8:
+                        if col_idx in (1, 2):
+                            # CUIL (col A) y DNI (col B): solo dígitos, sin formato
+                            if isinstance(cell, (int, float)):
+                                # Viene como número: convertir a int directamente
+                                cell_str = str(int(cell))
+                            else:
+                                # Viene como string: quitar puntos, guiones, espacios
+                                cell_str = str(cell).strip()
+                                cell_str = cell_str.replace('.', '').replace('-', '').replace(' ', '')
+                                # Si aún tiene forma de float string (ej: "20271234560.0"), limpiar
+                                if '.' in cell_str:
+                                    try:
+                                        cell_str = str(int(float(cell_str)))
+                                    except ValueError:
+                                        pass
+                            fila_limpia.append(cell_str)
+                        elif isinstance(cell, (int, float)):
+                            # Otros numéricos en cols texto (C-H)
                             if isinstance(cell, float) and cell.is_integer():
                                 fila_limpia.append(str(int(cell)))
                             else:
                                 cell_str = str(cell)
-                                # Eliminar .0 final si existe
                                 if cell_str.endswith('.0'):
                                     cell_str = cell_str[:-2]
                                 fila_limpia.append(cell_str)
                         else:
-                            # Para texto
                             cell_str = str(cell) if cell is not None else ""
-                            
-                            # IMPORTANTE: Columnas D (4), F (6) y H (8) - ELIMINAR TILDES
-                            if col_idx == 4 or col_idx == 6 or col_idx == 8:
-                                # COLUMNA D (Nombre y Apellido), F (Situación revista) y H (Repartición) - ELIMINAR TILDES
+                            # Columnas D (4), F (6) y H (8): eliminar tildes
+                            if col_idx in (4, 6, 8):
                                 fila_limpia.append(normalizar_texto(cell_str, eliminar_tildes_param=True))
                             else:
-                                # Otras columnas de texto - mantener tildes
                                 fila_limpia.append(normalizar_texto(cell_str, eliminar_tildes_param=False))
                     
                     else:  # Columnas I-X (9-24) - números SIEMPRE con 2 decimales y punto
@@ -345,6 +364,11 @@ def determinar_tipo_reparticion(nombre_archivo):
         r'universidad',
         r'facultad'
     ]
+
+    pasantias_patterns = [
+    r'pasantias',
+    r'pasantia'
+    ]
     
     # Verificar patrones en orden de prioridad
     for pattern in cajas_patterns:
@@ -371,6 +395,11 @@ def determinar_tipo_reparticion(nombre_archivo):
         if re.search(pattern, nombre_lower) or re.search(pattern, nombre_sin_ext):
             print(f"[CLASIFICACIÓN MEJORADA] Archivo: '{nombre_archivo}' → Municipios (patrón: {pattern})")
             return 'Municipios'
+    
+    for pattern in pasantias_patterns:
+        if re.search(pattern, nombre_lower) or re.search(pattern, nombre_sin_ext):
+            print(f"[CLASIFICACIÓN MEJORADA] Archivo: '{nombre_archivo}' → Pasantias (patrón: {pattern})")
+            return 'Pasantias'
     
     # SI NO ENCUENTRA NINGÚN PATRÓN, DEVOLVER 'Otros'
     print(f"[CLASIFICACIÓN MEJORADA] Archivo: '{nombre_archivo}' → Otros (no se encontró patrón)")
@@ -673,164 +702,20 @@ def calcular_sumatorias_datos(datos_excel):
     
     return sumatorias
 
-def extraer_y_preparar_datos_mes(drive, archivos_excel):
-    """Extrae datos de archivos Excel y los prepara para el CSV"""
-    mes_procesando = MES_ACTUAL
-
-    datos_mes = []
-    errores = []
-    archivos_procesados = 0
-    filas_totales = 0
-    
-    for archivo in archivos_excel:
-        print(f"\n📄 Procesando: {archivo['name']}")
-        
-        try:
-            # Descargar archivo
-            fh = descargar_archivo(drive, archivo)
-            if not fh:
-                errores.append(f"No se pudo descargar: {archivo['name']}")
-                continue
-            
-            # Extraer datos del Excel (solo los 24 campos A-X)
-            datos_excel = extraer_datos_excel(fh, archivo['name'], mes_procesando)
-            
-            if datos_excel:
-                # Agregar directamente los datos del Excel a datos_mes
-                # Cada fila_excel ya contiene los 24 campos + código
-                datos_mes.extend(datos_excel)
-                
-                filas_agregadas = len(datos_excel)
-                filas_totales += filas_agregadas
-                archivos_procesados += 1
-                print(f"   ✅ {filas_agregadas} filas extraídas (24 campos + código = 25 columnas)")
-            else:
-                print(f"   ⚠ Sin datos en la hoja del mes {mes_procesando}")
-                errores.append(f"Sin datos en hoja {mes_procesando}: {archivo['name']}")
-                
-        except Exception as e:
-            error_msg = f"Error procesando {archivo['name']}: {str(e)}"
-            print(f"   ❌ {error_msg}")
-            errores.append(error_msg)
-    
-<<<<<<< HEAD
-    return datos_mes, archivos_procesados, filas_totales, errores
-=======
-    # Guardar archivo CSV de reporte de aportantes
-    ruta_reporte = None
-    if datos_reporte_aportantes:
-        # Ordenar por código
-        datos_reporte_aportantes.sort(key=lambda x: x[0])
-        
-        # Guardar archivo CSV
-        anio_actual = obtener_anio(periodo)
-        mes_formateado = nombre_mes(MES_ACTUAL)
-        nombre_reporte = f"Aportantes_{mes_formateado}{anio_actual}.csv"
-        carpeta = crear_directorio_salida()
-        ruta_reporte = os.path.join(carpeta, nombre_reporte)
-        
-        with open(ruta_reporte, 'w', encoding='utf-8', newline='') as f:
-            f.write("Codigo|Reparticion|Cantidad\n")
-            for codigo, nombre, aportantes in datos_reporte_aportantes:
-                # Limpiar caracteres problemáticos
-                codigo_limpio = codigo.replace('|', '-')
-                nombre_limpio = nombre.replace('|', '-')
-                f.write(f"{codigo_limpio}|{nombre_limpio}|{aportantes}\n")
-        
-        print(f"\n✅ Reporte de aportantes guardado: {nombre_reporte}")
-        print(f"   Total reparticiones procesadas: {len(datos_reporte_aportantes)}")
-    
-    return datos_mes, archivos_procesados, filas_totales, errores, sumatorias_por_tipo, sumatorias_directas_periodo, datos_reporte_aportantes, ruta_reporte
-
->>>>>>> ddd92db (cron fv-automático y unificador mensual v.7)
-
-def combinar_con_existente(csv_existente, datos_nuevos):
-    """
-    Combina CSV existente con nuevos datos.
-    AHORA INCLUYE COLUMNA 25 PARA CÓDIGO.
-    """
-    if not csv_existente:
-        # Si no hay CSV existente, crear uno nuevo con encabezados de 25 campos
-        encabezados = [
-            "1-cuil",
-            "2-dni",
-            "3-tipo doc",
-            "4-nombre y apellido",
-            "5-cod liq",
-            "6-sit revista",
-            "7-estado del afil",
-            "8-reparticion",
-            "9-aporte personal",
-            "10-adherente sec",
-            "11-fondo v",
-            "12-hijo menor de 35",
-            "13-menor a cargo",
-            "14-cred asist",
-            "15-sueldo sin desc",
-            "16-sueldo con desc",
-            "17-reajs aporte pers",
-            "18-reaj adherente sec",
-            "19-reajuste fv",
-            "20-reajuste hijo menor",
-            "21-reajuste menor a cargo",
-            "22-reajuste cred asistencial",
-            "23-aporte patronal",
-            "24-reajuste aporte patronal",
-            "25-codigo"  # NUEVA COLUMNA
-        ]
-        return encabezados, datos_nuevos
-    
-    # Leer CSV existente
-    reader = csv.reader(io.StringIO(csv_existente))
-    filas_existentes = list(reader)
-    
-    if not filas_existentes:
-        return [], datos_nuevos
-    
-    # Separar encabezados y datos
-    encabezados = filas_existentes[0]
-    
-    # Si el CSV existente no tiene columna 25, agregarla
-    if len(encabezados) < 25:
-        encabezados.append("25-codigo")
-    
-    datos_existentes = filas_existentes[1:]
-    
-    # Asegurar que los datos existentes tengan 25 columnas
-    datos_existentes_normalizados = []
-    for fila in datos_existentes:
-        if len(fila) < 25:
-            # Completar con celdas vacías hasta llegar a 25
-            fila_completa = fila + [""] * (25 - len(fila))
-            datos_existentes_normalizados.append(fila_completa)
-        else:
-            datos_existentes_normalizados.append(fila)
-    
-    # Combinar todos los datos existentes con nuevos datos
-    datos_combinados = datos_existentes_normalizados + datos_nuevos
-    
-    return encabezados, datos_combinados
-
-def determina_mes_a_procesar(mes_actual):
-    
-    if mes_actual == "12":
-        return ["12", "2º sac"]
-    
-    if mes_actual == "06":
-        return ["06", "1º sac"]
-    
-    else:
-        return [mes_actual]
-
 def extraer_y_preparar_datos_mes_periodo(drive, archivos_excel, periodo):
     """
     Versión modificada que verifica consistencia
-    AHORA INCLUYE CÓDIGO EN LOS DATOS EXTRAÍDOS.
+    AHORA INCLUYE CÓDIGO EN LOS DATOS EXTRAÍDOS Y REPORTE DE APORTANTES.
+    Y RETORNA LA RUTA DEL REPORTE GENERADO.
     """
+    from utils.common_utils import crear_directorio_salida
+    
     datos_mes = []
     errores = []
     archivos_procesados = 0
     filas_totales = 0
+    datos_reporte_aportantes = []
+    dnis_unicos_periodo = set()  # Set global de DNIs únicos para todo el período
     
     # Diccionario para sumatorias por tipo de entidad - AGREGAR 'Otros'
     sumatorias_por_tipo = {
@@ -874,7 +759,15 @@ def extraer_y_preparar_datos_mes_periodo(drive, archivos_excel, periodo):
             'patronal': 0.0,
             'total': 0.0
         },
-        'Otros': {  # AGREGAR ESTA CATEGORÍA
+        'Pasantias': {
+            'creditos_asistenciales': 0.0,
+            'fondo_voluntario': 0.0,
+            'personal': 0.0,
+            'adherente': 0.0,
+            'patronal': 0.0,
+            'total': 0.0
+        },
+        'Otros': {
             'creditos_asistenciales': 0.0,
             'fondo_voluntario': 0.0,
             'personal': 0.0,
@@ -921,6 +814,33 @@ def extraer_y_preparar_datos_mes_periodo(drive, archivos_excel, periodo):
             datos_excel = extraer_datos_excel(fh, archivo['name'], periodo)
             
             if datos_excel:
+                # NUEVO: Acumular para reporte de aportantes
+                codigo_archivo = extraer_codigo_desde_nombre(archivo['name'])
+                nombre_reparticion = archivo['name'].replace('.xlsx', '').replace('.xlsm', '').replace('.xls', '')
+                # Limpiar nombre: sacar código y año
+                partes = nombre_reparticion.split('-', 1)
+                if len(partes) > 1:
+                    nombre_limpio = partes[1].rsplit('-', 1)[0].strip()
+                else:
+                    nombre_limpio = nombre_reparticion.rsplit('-', 1)[0].strip()
+                
+                # Contar DNIs únicos dentro de este archivo (columna B = índice 1)
+                # Normalizar el DNI: strip, quitar .0 final, para que coincida con el CSV unificado
+                def normalizar_dni(val):
+                    s = str(val).strip()
+                    if s.endswith('.0'):
+                        s = s[:-2]
+                    return s
+
+                dnis_archivo = set(
+                    normalizar_dni(fila[1]) for fila in datos_excel
+                    if len(fila) > 1 and fila[1] and normalizar_dni(fila[1]) not in ("", "None", "nan")
+                )
+                # Acumular al set global del período
+                dnis_unicos_periodo.update(dnis_archivo)
+                
+                datos_reporte_aportantes.append((codigo_archivo, nombre_limpio, len(dnis_archivo)))
+                
                 # Calcular sumatorias para este archivo
                 sumatorias_archivo = calcular_sumatorias_datos(datos_excel)
                 
@@ -1002,7 +922,139 @@ def extraer_y_preparar_datos_mes_periodo(drive, archivos_excel, periodo):
     for concepto, valor in sumatorias_directas_periodo.items():
         print(f"  {concepto.replace('_', ' ').title()}: ${valor:,.2f}")
     
-    return datos_mes, archivos_procesados, filas_totales, errores, sumatorias_por_tipo, sumatorias_directas_periodo
+    # Mostrar estadísticas del reporte de aportantes
+    if datos_reporte_aportantes:
+        # Recalcular DNIs únicos desde datos_mes (misma fuente que el CSV unificado)
+        def normalizar_dni(val):
+            s = str(val).strip()
+            if s.endswith('.0'):
+                s = s[:-2]
+            return s
+
+        dnis_unicos_periodo = set(
+            normalizar_dni(fila[1]) for fila in datos_mes
+            if len(fila) > 1 and fila[1] and normalizar_dni(fila[1]) not in ("", "None", "nan")
+        )
+
+        total_aportantes = sum(cantidad for _, _, cantidad in datos_reporte_aportantes)
+        total_dnis_unicos_periodo = len(dnis_unicos_periodo)
+        print(f"\n📊 REPORTE DE APORTANTES - PERÍODO {periodo}:")
+        print(f"  Total reparticiones: {len(datos_reporte_aportantes)}")
+        print(f"  Total aportantes (suma por repartición): {total_aportantes}")
+        print(f"  Total DNIs únicos en el período: {total_dnis_unicos_periodo}")
+        if total_aportantes != total_dnis_unicos_periodo:
+            print(f"  ⚠ Diferencia: {total_aportantes - total_dnis_unicos_periodo} DNIs duplicados entre reparticiones")
+    
+    # Guardar archivo CSV de reporte de aportantes
+    ruta_reporte = None
+    if datos_reporte_aportantes:
+        # Ordenar por código
+        datos_reporte_aportantes.sort(key=lambda x: x[0])
+        
+        # Guardar archivo CSV
+        mes_formateado = nombre_mes(periodo)
+        anio_calculado = obtener_anio(periodo)
+        nombre_reporte = f"Aportantes_{mes_formateado}{anio_calculado}.csv"
+        carpeta = crear_directorio_salida()
+        ruta_reporte = os.path.join(carpeta, nombre_reporte)
+        
+        with open(ruta_reporte, 'w', encoding='utf-8', newline='') as f:
+            f.write("Codigo|Reparticion|Cantidad\n")
+            for codigo, nombre, aportantes in datos_reporte_aportantes:
+                codigo_limpio = codigo.replace('|', '-')
+                nombre_limpio = nombre.replace('|', '-')
+                f.write(f"{codigo_limpio}|{nombre_limpio}|{aportantes}\n")
+            # Fila de totales al pie
+            suma_reparticiones = sum(cantidad for _, _, cantidad in datos_reporte_aportantes)
+            f.write(f"|||\n")
+            f.write(f"TOTAL|Total aportantes|{suma_reparticiones}\n")
+            f.write(f"TOTAL|Total aportantes unicos|{total_dnis_unicos_periodo}\n")
+        
+        print(f"\n✅ Reporte de aportantes guardado: {nombre_reporte}")
+        print(f"   Total reparticiones: {len(datos_reporte_aportantes)}")
+        print(f"   Total aportantes (suma reparticiones): {suma_reparticiones}")
+        print(f"   Total DNIs únicos del período: {total_dnis_unicos_periodo}")
+    
+    # RETORNAR 9 VALORES (incluyendo la ruta del reporte y DNIs únicos del período)
+    return datos_mes, archivos_procesados, filas_totales, errores, sumatorias_por_tipo, sumatorias_directas_periodo, datos_reporte_aportantes, ruta_reporte, dnis_unicos_periodo
+
+def combinar_con_existente(csv_existente, datos_nuevos):
+    """
+    Combina CSV existente con nuevos datos.
+    AHORA INCLUYE COLUMNA 25 PARA CÓDIGO.
+    """
+    if not csv_existente:
+        # Si no hay CSV existente, crear uno nuevo con encabezados de 25 campos
+        encabezados = [
+            "1-cuil",
+            "2-dni",
+            "3-tipo doc",
+            "4-nombre y apellido",
+            "5-cod liq",
+            "6-sit revista",
+            "7-estado del afil",
+            "8-reparticion",
+            "9-aporte personal",
+            "10-adherente sec",
+            "11-fondo v",
+            "12-hijo menor de 35",
+            "13-menor a cargo",
+            "14-cred asist",
+            "15-sueldo sin desc",
+            "16-sueldo con desc",
+            "17-reajs aporte pers",
+            "18-reaj adherente sec",
+            "19-reajuste fv",
+            "20-reajuste hijo menor",
+            "21-reajuste menor a cargo",
+            "22-reajuste cred asistencial",
+            "23-aporte patronal",
+            "24-reajuste aporte patronal",
+            "25-codigo"  # NUEVA COLUMNA
+        ]
+        return encabezados, datos_nuevos
+    
+    # Leer CSV existente
+    reader = csv.reader(io.StringIO(csv_existente))
+    filas_existentes = list(reader)
+    
+    if not filas_existentes:
+        return [], datos_nuevos
+    
+    # Separar encabezados y datos
+    encabezados = filas_existentes[0]
+    
+    # Si el CSV existente no tiene columna 25, agregarla
+    if len(encabezados) < 25:
+        encabezados.append("25-codigo")
+    
+    datos_existentes = filas_existentes[1:]
+    
+    # Asegurar que los datos existentes tengan 25 columnas
+    datos_existentes_normalizados = []
+    for fila in datos_existentes:
+        if len(fila) < 25:
+            # Completar con celdas vacías hasta llegar a 25
+            fila_completa = fila + [""] * (25 - len(fila))
+            datos_existentes_normalizados.append(fila_completa)
+        else:
+            datos_existentes_normalizados.append(fila)
+    
+    # Combinar todos los datos existentes con nuevos datos
+    datos_combinados = datos_existentes_normalizados + datos_nuevos
+    
+    return encabezados, datos_combinados
+
+def determina_mes_a_procesar(mes_actual):
+    
+    if mes_actual == "12":
+        return ["12", "2º sac"]
+    
+    if mes_actual == "06":
+        return ["06", "1º sac"]
+    
+    else:
+        return [mes_actual]
 
 def ejecutar_principal():
     """Función principal del unificador mensual"""
@@ -1010,7 +1062,7 @@ def ejecutar_principal():
     
     inicio = time.time()
     mes_actual = MES_ACTUAL
-    anio_actual = obtener_anio(mes_actual)
+    anio_actual = int(_anio_override) if _anio_override else obtener_anio(mes_actual)
     
     periodos = determina_mes_a_procesar(mes_actual)
    
@@ -1047,8 +1099,8 @@ def ejecutar_principal():
     # DEBUG: Mostrar nombres de archivos para verificar clasificación
     print(f"\n📋 LISTA DE ARCHIVOS EXCEL ENCONTRADOS ({len(archivos_excel)}):")
     
-    
     archivos_csv_generados = []
+    reportes_generados = []  # NUEVO: Lista para guardar rutas de CSVs de aportantes
     total_filas_todos_periodos = 0
     todos_errores = []
     cantidades_por_periodo = {}
@@ -1094,6 +1146,14 @@ def ejecutar_principal():
             'adherente': 0.0,
             'patronal': 0.0,
             'total': 0.0
+        },
+        'Pasantias': {
+            'creditos_asistenciales': 0.0,
+            'fondo_voluntario': 0.0,
+            'personal': 0.0,
+            'adherente': 0.0,
+            'patronal': 0.0,
+            'total': 0.0
         }
     }
     
@@ -1104,6 +1164,8 @@ def ejecutar_principal():
     # Estadísticas de consistencia
     consistencias_por_periodo = {}
     diferencias_totales = {}
+    aportantes_por_periodo = {}
+    total_dnis_unicos_por_periodo = {}  # DNIs únicos globales por período
 
     # 3. Procesar cada período por separado
     for periodo in periodos:
@@ -1113,14 +1175,23 @@ def ejecutar_principal():
         
         nombre_periodo = nombre_mes(periodo)
 
-        # 4. Extraer datos de este período específico con sumatorias directas
-        datos_periodo, archivos_procesados, filas_periodo, errores, sumatorias_por_tipo, sumatorias_directas = extraer_y_preparar_datos_mes_periodo(
+        # 4. Extraer datos de este período específico con sumatorias directas (AHORA 9 VALORES)
+        datos_periodo, archivos_procesados, filas_periodo, errores, sumatorias_por_tipo, sumatorias_directas, aportantes_periodo, ruta_reporte_periodo, dnis_unicos_periodo = extraer_y_preparar_datos_mes_periodo(
             drive, archivos_excel, periodo
         )
         
         # Guardar las sumatorias
         sumatorias_por_periodo_y_tipo[periodo] = sumatorias_por_tipo
         sumatorias_directas_por_periodo[periodo] = sumatorias_directas
+        
+        # Guardar datos de aportantes
+        aportantes_por_periodo[periodo] = aportantes_periodo
+        total_dnis_unicos_por_periodo[periodo] = len(dnis_unicos_periodo)
+        
+        # Guardar la ruta del reporte si existe
+        if ruta_reporte_periodo and os.path.exists(ruta_reporte_periodo):
+            reportes_generados.append(ruta_reporte_periodo)
+            print(f"   📄 Reporte de aportantes guardado: {os.path.basename(ruta_reporte_periodo)}")
         
         # Acumular sumatorias totales
         for tipo_entidad in sumatorias_por_tipo:
@@ -1275,14 +1346,18 @@ def ejecutar_principal():
         ahora.strftime("%d-%m-%Y %H:%M:%S"),
         cantidades_por_periodo,
         anio_actual,
-        sumatorias_por_periodo_y_tipo
+        sumatorias_por_periodo_y_tipo,
+        aportantes_por_periodo,
+        total_dnis_unicos_por_periodo
     )
     
-    # Enviar email con todos los archivos CSV adjuntos
-    print(f"📎 Adjuntando {len(archivos_csv_generados)} archivo(s) CSV al email...")
+    # Enviar email con todos los archivos adjuntos (UNIFICADOS + REPORTES)
+    print(f"📎 Adjuntando {len(archivos_csv_generados)} archivo(s) CSV unificados y {len(reportes_generados)} reporte(s) de aportantes...")
     
     # Filtrar archivos que existen y tienen tamaño razonable (<25MB)
     adjuntos_validos = []
+    
+    # Agregar CSVs unificados
     for ruta in archivos_csv_generados:
         if os.path.exists(ruta):
             file_size = os.path.getsize(ruta) / (1024 * 1024)
@@ -1293,6 +1368,21 @@ def ejecutar_principal():
                 print(f"  ⚠️  {os.path.basename(ruta)} demasiado grande ({file_size:.2f} MB) - no se adjunta")
         else:
             print(f"  ❌ {os.path.basename(ruta)} no encontrado")
+    
+    # ✅ AGREGAR REPORTES DE APORTANTES
+    for ruta in reportes_generados:
+        if os.path.exists(ruta):
+            file_size = os.path.getsize(ruta) / (1024 * 1024)
+            if file_size < 25:
+                adjuntos_validos.append(ruta)
+                print(f"  📊 {os.path.basename(ruta)} ({file_size:.2f} MB) - reporte de aportantes")
+            else:
+                print(f"  ⚠️  {os.path.basename(ruta)} demasiado grande ({file_size:.2f} MB) - no se adjunta")
+        else:
+            print(f"  ❌ {os.path.basename(ruta)} no encontrado")
+    
+    # Mostrar resumen de adjuntos
+    print(f"📎 Total adjuntos a enviar: {len(adjuntos_validos)}")
     
     enviar_email_html_con_adjuntos(asunto, html, adjuntos_validos, "SMTP_TO_UNIFICADOR")
     
