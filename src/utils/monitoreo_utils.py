@@ -2,7 +2,7 @@
 Utilidades del bot de monitoreo de liquidaciones.
 
 Contiene:
-  - CONFIG / constantes (espejo de las del Apps Script)
+  - CONFIG / constantes (espejo del Apps Script)
   - Lógica de comparación (normal y caja)
   - Generadores de adjuntos: XLSX de cambios y CSVs
   - Helpers de nombres/periodos
@@ -21,45 +21,45 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 # ---------------------------------------------------------------------------
 
 CONFIG = {
-    "CARPETA_ID":            "1_Xb2jrtr3Sjwi8-2nhT2k53KZ6CLE5hJ",
-    "CARPETA_INTERNA_ID":    "1XJj3pMySybGeK7cW5-PRFPf1q5w2Dch5",
-    "CARPETA_SNAPSHOTS":     "_snapshots_liquidaciones",
-    "NOMBRE_REGISTRO":       "_registro_agentes",
+    "CARPETA_ID": "1_Xb2jrtr3Sjwi8-2nhT2k53KZ6CLE5hJ",
+    "CARPETA_INTERNA_ID": "1XJj3pMySybGeK7cW5-PRFPf1q5w2Dch5",
+    "CARPETA_SNAPSHOTS": "_snapshots_liquidaciones",
+    "NOMBRE_REGISTRO": "_registro_agentes",
 
     "COL_INICIO": 1,
-    "COL_FIN":    24,
-    "COL_DNI":    2,
+    "COL_FIN": 24,
+    "COL_DNI": 2,
 
     "FILA_INICIO_DEFAULT": 4,
-    "FILA_INICIO_CAJA":    5,
+    "FILA_INICIO_CAJA": 5,
 }
 
 HOJAS_ORDEN = [
-    "01","02","03","04","05","06","1° sac",
-    "07","08","09","10","11","12","2° sac",
+    "01", "02", "03", "04", "05", "06", "1° sac",
+    "07", "08", "09", "10", "11", "12", "2° sac",
 ]
 
 # Columnas numéricas (0-based dentro del rango A..X): cols 9-24 → offset 8-23
 COLS_NUMERICAS = set(range(8, 24))
 
 NOMBRES_COLUMNAS = [
-    "cuil","dni","tipo doc","nombre y apellido","cod. liq.",
-    "sit. revista","estado afil.","reparticion","aporte personal",
-    "adherente sec.","fondo vol.","hijo menor de 35","menor a cargo",
-    "cred. asist.","sueldo sin desc.","sueldo con desc.",
-    "reaj. aporte pers.","reaj. adh. sec.","reaj. fv",
-    "reaj. hijo menor","reaj. menor cargo","reaj. cred. asist.",
-    "aporte patronal","reaj. ap. patronal",
+    "cuil", "dni", "tipo doc", "nombre y apellido", "cod. liq.",
+    "sit. revista", "estado afil.", "reparticion", "aporte personal",
+    "adherente sec.", "fondo vol.", "hijo menor de 35", "menor a cargo",
+    "cred. asist.", "sueldo sin desc.", "sueldo con desc.",
+    "reaj. aporte pers.", "reaj. adh. sec.", "reaj. fv",
+    "reaj. hijo menor", "reaj. menor cargo", "reaj. cred. asist.",
+    "aporte patronal", "reaj. ap. patronal",
 ]
 
 ENCABEZADOS_EXCEL = [
-    "1-cuil","2-dni","3-tipo doc","4-nombre y apellido","5-cod. liq.",
-    "6-sit. revista","7-estado afil.","8-reparticion","9-aporte personal",
-    "10-adherente sec.","11-fondo vol.","12-hijo menor de 35","13-menor a cargo",
-    "14-cred. asist.","15-sueldo sin desc.","16-sueldo con desc.",
-    "17-reaj. aporte pers.","18-reaj. adh. sec.","19-reaj. fv",
-    "20-reaj. hijo menor","21-reaj. menor cargo","22-reaj. cred. asist.",
-    "23-aporte patronal","24-reaj. ap. patronal",
+    "1-cuil", "2-dni", "3-tipo doc", "4-nombre y apellido", "5-cod. liq.",
+    "6-sit. revista", "7-estado afil.", "8-reparticion", "9-aporte personal",
+    "10-adherente sec.", "11-fondo vol.", "12-hijo menor de 35", "13-menor a cargo",
+    "14-cred. asist.", "15-sueldo sin desc.", "16-sueldo con desc.",
+    "17-reaj. aporte pers.", "18-reaj. adh. sec.", "19-reaj. fv",
+    "20-reaj. hijo menor", "21-reaj. menor cargo", "22-reaj. cred. asist.",
+    "23-aporte patronal", "24-reaj. ap. patronal",
 ]
 
 # Columna de sueldo sin descuentos (0-based) para separar complementarias
@@ -86,7 +86,7 @@ def parse_numero(val):
         return 0.0
 
 
-def fmt_importe(val):
+def formatear_importe(val):
     return f"{parse_numero(val):.2f}"
 
 
@@ -123,7 +123,7 @@ def leer_rango(datos):
     col_dni = CONFIG["COL_DNI"] - CONFIG["COL_INICIO"]   # 0-based
     return [
         fila for fila in datos
-        if str(fila[col_dni] or "").strip() not in ("", "-", "0")
+        if str(fila[col_dni] if col_dni < len(fila) else "").strip() not in ("", "-", "0")
     ]
 
 
@@ -135,9 +135,9 @@ def _indexar(filas, hoja_registro, get_id_fn):
     col_dni = CONFIG["COL_DNI"] - CONFIG["COL_INICIO"]
     mapa = {}
     for fila in filas:
-        cuil   = str(fila[0] or "").strip()
-        dni    = str(fila[col_dni] or "").strip()
-        nombre = str(fila[3] or "").strip()
+        cuil = str(fila[0] if len(fila) > 0 else "").strip()
+        dni = str(fila[col_dni] if len(fila) > col_dni else "").strip()
+        nombre = str(fila[3] if len(fila) > 3 else "").strip()
         if not cuil and not dni and not nombre:
             continue
         aid = get_id_fn(cuil, dni, nombre, hoja_registro) if hoja_registro else (dni or cuil)
@@ -149,26 +149,27 @@ def _indexar(filas, hoja_registro, get_id_fn):
 # Comparación modo normal
 # ---------------------------------------------------------------------------
 
-def compararHojasNormal(datos_actual, datos_snap, hoja_registro):
+def comparar_hojas_normal(datos_actual, datos_snap, hoja_registro):
     from utils.registro_utils import obtener_id_agente
-    cambios   = []
+    cambios = []
     cant_cols = CONFIG["COL_FIN"] - CONFIG["COL_INICIO"] + 1
-    col_dni   = CONFIG["COL_DNI"] - CONFIG["COL_INICIO"]
+    col_dni = CONFIG["COL_DNI"] - CONFIG["COL_INICIO"]
 
-    mapa_snap = _indexar(datos_snap,   hoja_registro, obtener_id_agente)
-    mapa_act  = _indexar(datos_actual, hoja_registro, obtener_id_agente)
+    mapa_snap = _indexar(datos_snap, hoja_registro, obtener_id_agente)
+    mapa_act = _indexar(datos_actual, hoja_registro, obtener_id_agente)
 
     # Eliminados completamente
     for aid, filas in mapa_snap.items():
         if aid not in mapa_act:
             f = filas[0]
-            cambios.append({"tipo": "eliminado", "dni": str(f[col_dni] or "").strip(),
-                            "nombre": f[3] or "(sin nombre)", "fila": f})
+            dni = str(f[col_dni] if len(f) > col_dni else "").strip()
+            nombre = f[3] if len(f) > 3 else "(sin nombre)"
+            cambios.append({"tipo": "eliminado", "dni": dni, "nombre": nombre, "fila": f})
 
     for aid, filas_act in mapa_act.items():
-        fref   = filas_act[0]
-        dni    = str(fref[col_dni] or "").strip()
-        nombre = fref[3] or "(sin nombre)"
+        fref = filas_act[0]
+        dni = str(fref[col_dni] if len(fref) > col_dni else "").strip()
+        nombre = fref[3] if len(fref) > 3 else "(sin nombre)"
 
         if aid not in mapa_snap:
             for f in filas_act:
@@ -189,13 +190,17 @@ def compararHojasNormal(datos_actual, datos_snap, hoja_registro):
         for i in range(min(len(filas_act), len(filas_sn))):
             fa, fs = filas_act[i], filas_sn[i]
             for c in range(cant_cols):
-                va = normalizar_cuil(str(fa[c] or "").strip(), c)
-                vs = normalizar_cuil(str(fs[c] or "").strip(), c)
+                va = normalizar_cuil(str(fa[c] if len(fa) > c else "").strip(), c)
+                vs = normalizar_cuil(str(fs[c] if len(fs) > c else "").strip(), c)
                 if va != vs:
                     cambios.append({
-                        "tipo": "modificado", "id": aid, "dni": dni, "nombre": nombre,
+                        "tipo": "modificado",
+                        "id": aid,
+                        "dni": dni,
+                        "nombre": nombre,
                         "columna": NOMBRES_COLUMNAS[c] if c < len(NOMBRES_COLUMNAS) else f"col{c+1}",
-                        "anterior": vs or "(vacío)", "actual": va or "(vacío)",
+                        "anterior": vs or "(vacío)",
+                        "actual": va or "(vacío)",
                         "es_no_numerico": c not in COLS_NUMERICAS,
                         "fila": fa,
                     })
@@ -207,42 +212,56 @@ def compararHojasNormal(datos_actual, datos_snap, hoja_registro):
 # Comparación modo caja
 # ---------------------------------------------------------------------------
 
-def compararHojasCaja(datos_actual, datos_snap, hoja_registro):
+def comparar_hojas_caja(datos_actual, datos_snap, hoja_registro):
     from utils.registro_utils import obtener_id_agente
-    cambios  = []
+    cambios = []
     cant_cols = CONFIG["COL_FIN"] - CONFIG["COL_INICIO"] + 1
-    col_dni   = CONFIG["COL_DNI"] - CONFIG["COL_INICIO"]
+    col_dni = CONFIG["COL_DNI"] - CONFIG["COL_INICIO"]
 
-    grupos_act  = _indexar(datos_actual, hoja_registro, obtener_id_agente)
-    grupos_snap = _indexar(datos_snap,   hoja_registro, obtener_id_agente)
-    todos_ids   = set(list(grupos_act.keys()) + list(grupos_snap.keys()))
+    grupos_act = _indexar(datos_actual, hoja_registro, obtener_id_agente)
+    grupos_snap = _indexar(datos_snap, hoja_registro, obtener_id_agente)
+    todos_ids = set(list(grupos_act.keys()) + list(grupos_snap.keys()))
 
     for aid in todos_ids:
         fa_list = grupos_act.get(aid, [])
         fs_list = grupos_snap.get(aid, [])
-        fref    = (fa_list or fs_list)[0]
-        dni     = str(fref[col_dni] or "").strip()
-        nombre  = fref[3] or "(sin nombre)"
+        fref = (fa_list or fs_list)[0]
+        dni = str(fref[col_dni] if len(fref) > col_dni else "").strip()
+        nombre = fref[3] if len(fref) > 3 else "(sin nombre)"
 
         for i in range(len(fa_list), len(fs_list)):
-            cambios.append({"tipo": "eliminado", "dni": dni, "nombre": nombre,
-                            "registro": i + 1, "fila": fs_list[i]})
+            cambios.append({
+                "tipo": "eliminado",
+                "dni": dni,
+                "nombre": nombre,
+                "registro": i + 1,
+                "fila": fs_list[i] if i < len(fs_list) else None
+            })
 
         for i in range(len(fs_list), len(fa_list)):
-            cambios.append({"tipo": "nuevo", "dni": dni, "nombre": nombre,
-                            "registro": i + 1, "fila": fa_list[i]})
+            cambios.append({
+                "tipo": "nuevo",
+                "dni": dni,
+                "nombre": nombre,
+                "registro": i + 1,
+                "fila": fa_list[i] if i < len(fa_list) else None
+            })
 
         for i in range(min(len(fa_list), len(fs_list))):
             fa, fs = fa_list[i], fs_list[i]
             for c in range(cant_cols):
-                va = normalizar_cuil(str(fa[c] or "").strip(), c)
-                vs = normalizar_cuil(str(fs[c] or "").strip(), c)
+                va = normalizar_cuil(str(fa[c] if len(fa) > c else "").strip(), c)
+                vs = normalizar_cuil(str(fs[c] if len(fs) > c else "").strip(), c)
                 if va != vs:
                     cambios.append({
-                        "tipo": "modificado", "id": aid, "dni": dni, "nombre": nombre,
+                        "tipo": "modificado",
+                        "id": aid,
+                        "dni": dni,
+                        "nombre": nombre,
                         "registro": i + 1,
                         "columna": NOMBRES_COLUMNAS[c] if c < len(NOMBRES_COLUMNAS) else f"col{c+1}",
-                        "anterior": vs or "(vacío)", "actual": va or "(vacío)",
+                        "anterior": vs or "(vacío)",
+                        "actual": va or "(vacío)",
                         "es_no_numerico": c not in COLS_NUMERICAS,
                         "fila": fa,
                     })
@@ -254,12 +273,12 @@ def compararHojasCaja(datos_actual, datos_snap, hoja_registro):
 # Separar ordinarias / complementarias
 # ---------------------------------------------------------------------------
 
-def separar_complementarias(mapa_agrupado):
+def separar_complementarias_agrupado(mapa_agrupado):
     """
     mapa_agrupado: { id: [fila, ...] }
     Retorna: { "ordinarias": {id: fila}, "complementarias": {id: [fila, ...]} }
     """
-    ordinarias      = {}
+    ordinarias = {}
     complementarias = {}
 
     for aid, filas in mapa_agrupado.items():
@@ -268,7 +287,7 @@ def separar_complementarias(mapa_agrupado):
         if len(filas) == 1:
             ordinarias[aid] = filas[0]
             continue
-        idx_max = max(range(len(filas)), key=lambda i: parse_numero(filas[i][COL_SUELDO_SIN_DESC]))
+        idx_max = max(range(len(filas)), key=lambda i: parse_numero(filas[i][COL_SUELDO_SIN_DESC] if len(filas[i]) > COL_SUELDO_SIN_DESC else 0))
         ordinarias[aid] = filas[idx_max]
         comps = [f for i, f in enumerate(filas) if i != idx_max]
         if comps:
@@ -290,9 +309,9 @@ def _fila_a_csv(fila, cant_cols):
     cols = []
     for i in range(cant_cols):
         val = fila[i] if i < len(fila) else None
-        s   = str(val or "").strip()
+        s = str(val or "").strip()
         if COLS_NUMERICAS and i in COLS_NUMERICAS:
-            cols.append(fmt_importe(val))
+            cols.append(formatear_importe(val))
         else:
             cols.append(s.replace("|", " ").replace("\n", " "))
     return "|".join(cols)
@@ -300,8 +319,8 @@ def _fila_a_csv(fila, cant_cols):
 
 def generar_csv_modificados(modifs, nuevos, ruta):
     cant_cols = CONFIG["COL_FIN"] - CONFIG["COL_INICIO"] + 1
-    vistas    = set()
-    lineas    = []
+    vistas = set()
+    lineas = []
 
     for c in modifs:
         clave = f"{c.get('id','')}_{c.get('fila','')}"
@@ -316,16 +335,14 @@ def generar_csv_modificados(modifs, nuevos, ruta):
     _escribir_csv(lineas, ruta)
 
 
-def generar_csv_complementarias(mapa_agrupado, ruta):
+def generar_csv_complementarias(complementarias, ruta):
     """Devuelve True si se escribió algo, False si no había complementarias."""
     cant_cols = CONFIG["COL_FIN"] - CONFIG["COL_INICIO"] + 1
-    resultado = separar_complementarias(mapa_agrupado)
-    comps     = resultado["complementarias"]
-    if not comps:
+    if not complementarias:
         return False
 
     lineas = []
-    for filas in comps.values():
+    for filas in complementarias.values():
         for f in filas:
             lineas.append(_fila_a_csv(f, cant_cols))
 
@@ -336,14 +353,14 @@ def generar_csv_complementarias(mapa_agrupado, ruta):
 def generar_csv_liquidacion_completa(mapa_agrupado, es_caja, ruta):
     """Solo ordinarias en modo normal; todas las filas en modo caja."""
     cant_cols = CONFIG["COL_FIN"] - CONFIG["COL_INICIO"] + 1
-    lineas    = []
+    lineas = []
 
     if es_caja:
         for filas in mapa_agrupado.values():
             for f in (filas if isinstance(filas[0], list) else [filas]):
                 lineas.append(_fila_a_csv(f, cant_cols))
     else:
-        resultado = separar_complementarias(mapa_agrupado)
+        resultado = separar_complementarias_agrupado(mapa_agrupado)
         for f in resultado["ordinarias"].values():
             lineas.append(_fila_a_csv(f, cant_cols))
 
@@ -351,54 +368,58 @@ def generar_csv_liquidacion_completa(mapa_agrupado, es_caja, ruta):
 
 
 # ---------------------------------------------------------------------------
-# Generador de XLSX de cambios (con openpyxl — mismo resultado visual)
+# Generador de XLSX de cambios (con openpyxl)
 # ---------------------------------------------------------------------------
 
 # Estilos
-_THIN  = Side(style="thin",   color="D1D5DB")
-_MED   = Side(style="medium", color="6B7280")
+_THIN = Side(style="thin", color="D1D5DB")
+_MED = Side(style="medium", color="6B7280")
 _BRD_N = Border(left=_THIN, right=_THIN, top=_THIN, bottom=_THIN)
 _BRD_B = Border(left=_THIN, right=_THIN, top=_THIN, bottom=_MED)
 
 _FILL_HEADER = PatternFill("solid", fgColor="074F69")
-_FILL_BLUE   = PatternFill("solid", fgColor="EFF6FF")
-_FILL_WHITE  = PatternFill("solid", fgColor="FFFFFF")
-_FILL_RED    = PatternFill("solid", fgColor="C83C2D")
-_FILL_GREEN  = PatternFill("solid", fgColor="275317")
+_FILL_BLUE = PatternFill("solid", fgColor="EFF6FF")
+_FILL_WHITE = PatternFill("solid", fgColor="FFFFFF")
+_FILL_RED = PatternFill("solid", fgColor="C83C2D")
+_FILL_GREEN = PatternFill("solid", fgColor="275317")
 
-_FONT_HDR    = Font(name="Calibri", size=11, bold=True, color="8ED973")
+_FONT_HDR = Font(name="Calibri", size=11, bold=True, color="8ED973")
 _FONT_NORMAL = Font(name="Calibri", size=11)
-_FONT_RED    = Font(name="Calibri", size=11, color="B91C1C")
-_FONT_GREEN  = Font(name="Calibri", size=11, bold=True, color="15803D")
-_FONT_WHITE  = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
-_FONT_RED_S  = Font(name="Calibri", size=11, bold=True, color="C83C2D")
-_FONT_GRN_S  = Font(name="Calibri", size=11, bold=True, color="275317")
+_FONT_RED = Font(name="Calibri", size=11, color="B91C1C")
+_FONT_GREEN = Font(name="Calibri", size=11, bold=True, color="15803D")
+_FONT_WHITE = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+_FONT_RED_S = Font(name="Calibri", size=11, bold=True, color="C83C2D")
+_FONT_GRN_S = Font(name="Calibri", size=11, bold=True, color="275317")
 _FONT_BLUE_S = Font(name="Calibri", size=11, bold=True, color="215C98")
 
-_ALIGN_CTR   = Alignment(horizontal="center", vertical="center")
-_ALIGN_LEFT  = Alignment(horizontal="left",   vertical="center")
-_NUM_FMT     = "#,##0.00"
+_ALIGN_CTR = Alignment(horizontal="center", vertical="center")
+_ALIGN_LEFT = Alignment(horizontal="left", vertical="center")
+_NUM_FMT = "#,##0.00"
 
-_ANCHOS = [14, 30, 22, 22, 14, 14, 14, 35] + [16] * 16  # 24 columnas
+_ANCHOS = [14, 30, 22, 22, 14, 14, 14, 35] + [16] * 16
 
 
 def _celda(ws, row, col, valor, font=None, fill=None, border=None, align=None, num_fmt=None):
     c = ws.cell(row=row, column=col, value=valor)
-    if font:    c.font      = font
-    if fill:    c.fill      = fill
-    if border:  c.border    = border
-    if align:   c.alignment = align
-    if num_fmt: c.number_format = num_fmt
+    if font:
+        c.font = font
+    if fill:
+        c.fill = fill
+    if border:
+        c.border = border
+    if align:
+        c.alignment = align
+    if num_fmt:
+        c.number_format = num_fmt
     return c
 
 
 def generar_xlsx_cambios(modifs, elims, nuevos, periodo, reparticion, ruta_salida):
     wb = openpyxl.Workbook()
     ws = wb.active
-    nombre_hoja = re.sub(r'[\\/:*?\[\]]', '-', periodo).replace("°", "")[:31].strip()
+    nombre_hoja = re.sub(r'[\\/:*?\[\]]', '-', str(periodo)).replace("°", "")[:31].strip()
     ws.title = nombre_hoja
 
-    # Anchos de columna
     for i, ancho in enumerate(_ANCHOS, 1):
         ws.column_dimensions[ws.cell(1, i).column_letter].width = ancho
 
@@ -425,26 +446,26 @@ def generar_xlsx_cambios(modifs, elims, nuevos, periodo, reparticion, ruta_salid
             grupos[d]["cambios"].append(c)
 
         for gi, dni in enumerate(orden_dni):
-            g      = grupos[dni]
-            fill   = _FILL_BLUE if gi % 2 == 0 else _FILL_WHITE
-            cc     = g["cambios"]
+            g = grupos[dni]
+            fill = _FILL_BLUE if gi % 2 == 0 else _FILL_WHITE
+            cc = g["cambios"]
             for i, c in enumerate(cc):
                 es_ult = i == len(cc) - 1
-                brd    = _BRD_B if es_ult else _BRD_N
-                campo  = c["columna"]
-                idx_c  = NOMBRES_COLUMNAS.index(campo) if campo in NOMBRES_COLUMNAS else -1
+                brd = _BRD_B if es_ult else _BRD_N
+                campo = c["columna"]
+                idx_c = NOMBRES_COLUMNAS.index(campo) if campo in NOMBRES_COLUMNAS else -1
                 campo_label = f"{idx_c+1}-{campo}" if idx_c >= 0 else campo
 
-                _celda(ws, row, 1, dni   if i == 0 else "", font=_FONT_NORMAL, fill=fill, border=brd, align=_ALIGN_LEFT)
+                _celda(ws, row, 1, dni if i == 0 else "", font=_FONT_NORMAL, fill=fill, border=brd, align=_ALIGN_LEFT)
                 _celda(ws, row, 2, g["nombre"] if i == 0 else "", font=_FONT_NORMAL, fill=fill, border=brd, align=_ALIGN_LEFT)
                 _celda(ws, row, 3, campo_label, font=_FONT_NORMAL, fill=fill, border=brd, align=_ALIGN_LEFT)
 
                 if c["es_no_numerico"]:
-                    _celda(ws, row, 4, str(c["anterior"]), font=_FONT_RED,   fill=fill, border=brd, align=_ALIGN_LEFT)
-                    _celda(ws, row, 5, str(c["actual"]),   font=_FONT_GREEN, fill=fill, border=brd, align=_ALIGN_LEFT)
+                    _celda(ws, row, 4, str(c["anterior"]), font=_FONT_RED, fill=fill, border=brd, align=_ALIGN_LEFT)
+                    _celda(ws, row, 5, str(c["actual"]), font=_FONT_GREEN, fill=fill, border=brd, align=_ALIGN_LEFT)
                 else:
-                    _celda(ws, row, 4, parse_numero(c["anterior"]), font=_FONT_RED,   fill=fill, border=brd, align=_ALIGN_LEFT, num_fmt=_NUM_FMT)
-                    _celda(ws, row, 5, parse_numero(c["actual"]),   font=_FONT_GREEN, fill=fill, border=brd, align=_ALIGN_LEFT, num_fmt=_NUM_FMT)
+                    _celda(ws, row, 4, parse_numero(c["anterior"]), font=_FONT_RED, fill=fill, border=brd, align=_ALIGN_LEFT, num_fmt=_NUM_FMT)
+                    _celda(ws, row, 5, parse_numero(c["actual"]), font=_FONT_GREEN, fill=fill, border=brd, align=_ALIGN_LEFT, num_fmt=_NUM_FMT)
                 row += 1
         row += 1
 
@@ -457,7 +478,7 @@ def generar_xlsx_cambios(modifs, elims, nuevos, periodo, reparticion, ruta_salid
             _celda(ws, row, ci, enc, font=_FONT_HDR, fill=_FILL_HEADER, border=_BRD_N, align=_ALIGN_CTR)
         row += 1
         for i, c in enumerate(lista):
-            brd  = _BRD_B if i == len(lista) - 1 else _BRD_N
+            brd = _BRD_B if i == len(lista) - 1 else _BRD_N
             fila = c.get("fila", [])
             cant = CONFIG["COL_FIN"] - CONFIG["COL_INICIO"] + 1
             for ci in range(cant):
@@ -484,9 +505,10 @@ def generar_xlsx_cambios(modifs, elims, nuevos, periodo, reparticion, ruta_salid
 
 _MESES = {
     "01": "Enero", "02": "Febrero", "03": "Marzo", "04": "Abril",
-    "05": "Mayo",  "06": "Junio",   "07": "Julio", "08": "Agosto",
+    "05": "Mayo", "06": "Junio", "07": "Julio", "08": "Agosto",
     "09": "Septiembre", "10": "Octubre", "11": "Noviembre", "12": "Diciembre",
 }
+
 
 def hoja_a_periodo(hoja, anio):
     hl = hoja.strip().lower().replace("º", "°")
@@ -502,10 +524,10 @@ def hoja_a_periodo(hoja, anio):
 
 def extraer_reparticion(nombre_archivo):
     sin_ext = nombre_archivo.replace(".xlsx", "").replace(".XLSX", "")
-    partes  = sin_ext.split("-")
+    partes = sin_ext.split("-")
     if len(partes) >= 3:
         ultimo = partes[-1].strip()
-        fin    = len(partes) - 1 if re.match(r"^\d{4}$", ultimo) else len(partes)
+        fin = len(partes) - 1 if re.match(r"^\d{4}$", ultimo) else len(partes)
         return "-".join(partes[1:fin]).strip()
     return sin_ext
 
