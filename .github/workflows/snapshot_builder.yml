@@ -9,7 +9,8 @@ jobs:
     timeout-minutes: 360   # 6 horas de margen
 
     env:
-      GDRIVE_JSON:          ${{ secrets.GDRIVE_JSON }}
+      OAUTH_REFRESH_TOKEN:  ${{ secrets.OAUTH_REFRESH_TOKEN }}  # ⬅️ NUEVO (reemplaza a GDRIVE_JSON)
+      # GDRIVE_JSON ya no se usa
       SMTP_TO_UNIFICADOR:   ${{ secrets.SMTP_TO_UNIFICADOR }}
       SMTP_FROM:            ${{ secrets.SMTP_FROM }}
       SMTP_PASSWORD:        ${{ secrets.SMTP_PASSWORD }}
@@ -37,7 +38,7 @@ jobs:
             httplib2==0.22.0
 
       - name: Ejecutar snapshot builder
-        run: python -u src/snapshot_bot.py   # ⬅️ AGREGADO -u
+        run: python -u src/snapshot_bot.py
 
       - name: Mostrar finalización
         run: echo "✅ Snapshot builder ejecutado."

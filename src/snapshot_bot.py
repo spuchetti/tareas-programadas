@@ -23,7 +23,8 @@ sys.stdout.reconfigure(line_buffering=True)
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 from googleapiclient.errors import HttpError
-from google.oauth2.service_account import Credentials
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -52,16 +53,27 @@ MAX_ARCHIVOS_PRUEBA = 3
 # ---------------------------------------------------------------------------
 
 def inicializar_drive_con_scopes():
-    """Inicializa Drive con scopes completos (lectura + escritura)."""
+    """Inicializa Drive usando OAuth 2.0 con refresh token."""
     try:
-        cfg   = json.loads(os.getenv("GDRIVE_JSON"))
-        creds = Credentials.from_service_account_info(
-            cfg,
-            scopes=[
-                "https://www.googleapis.com/auth/drive",
-                "https://www.googleapis.com/auth/spreadsheets",
-            ],
+        # Cargar el refresh token desde el secret
+        token_data = json.loads(os.getenv("OAUTH_REFRESH_TOKEN"))
+        
+        # Crear credenciales
+        creds = Credentials(
+            token=token_data.get("token"),
+            refresh_token=token_data["refresh_token"],
+            token_uri=token_data["token_uri"],
+            client_id=token_data["client_id"],
+            client_secret=token_data["client_secret"],
+            scopes=token_data["scopes"]
         )
+        
+        # Si el token expiró, refrescarlo automáticamente
+        if creds.expired:
+            print("🔄 Refrescando token...", flush=True)
+            creds.refresh(Request())
+            print("✅ Token refrescado", flush=True)
+        
         return build("drive", "v3", credentials=creds, cache_discovery=False)
     except Exception as e:
         print(f"❌ Error iniciando Drive: {e}", flush=True)
@@ -168,10 +180,9 @@ def subir_como_gsheet(drive, fh, nombre_snap, snap_folder_id):
     Reintenta hasta INTENTOS_MAX veces ante errores de rate limit.
     """
     fh.seek(0)
-    # ⬇️ CAMBIADO: mimeType a application/vnd.google-apps.spreadsheet
     media = MediaIoBaseUpload(
         fh,
-        mimetype="application/vnd.google-apps.spreadsheet",  # ⬅️ CAMBIADO
+        mimetype="application/vnd.google-apps.spreadsheet",
         resumable=True,
     )
     for intento in range(INTENTOS_MAX):
@@ -188,9 +199,8 @@ def subir_como_gsheet(drive, fh, nombre_snap, snap_folder_id):
             ).execute()
             return resultado["id"]
         except HttpError as e:
-            # ⬇️ MOSTRAR DETALLE COMPLETO DEL ERROR
             print(f"   ❌ Error {e.resp.status}: {e._get_reason()}", flush=True)
-            print(f"   📝 Contenido completo: {e.content}", flush=True)
+            print(f"   📝 Detalle: {e.content}", flush=True)
             
             if e.resp.status in (403, 429, 500, 503):
                 espera = ESPERA_REINTENTO * (intento + 1)
@@ -210,7 +220,7 @@ def ejecutar_principal():
     inicio = time.time()
     ahora  = registrar_inicio("BOT SNAPSHOT BUILDER - Monitoreo de Liquidaciones")
 
-    print("🔑 Inicializando Drive...", flush=True)
+    print("🔑 Inicializando Drive con OAuth...", flush=True)
     drive = inicializar_drive_con_scopes()
     if not drive:
         print("❌ No se pudo inicializar Drive", flush=True)
@@ -234,7 +244,7 @@ def ejecutar_principal():
     # ⬇️ MODO PRUEBA: limitar cantidad de archivos
     if MODO_PRUEBA and len(archivos) > MAX_ARCHIVOS_PRUEBA:
         archivos = archivos[:MAX_ARCHIVOS_PRUEBA]
-        print(f"⚠️  MODO PRUEBA: procesando solo {len(archivos)} archivos (de {len(archivos)})", flush=True)
+        print(f"⚠️  MODO PRUEBA: procesando solo {len(archivos)} archivos", flush=True)
     print()
 
     procesados, saltados, errores = 0, 0, 0
