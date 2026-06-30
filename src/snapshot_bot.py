@@ -17,6 +17,9 @@ import sys
 import time
 import traceback
 
+# ⬇️ FORZAR FLUSH DE PRINTS
+sys.stdout.reconfigure(line_buffering=True)
+
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 from googleapiclient.errors import HttpError
@@ -39,6 +42,10 @@ INTENTOS_MAX    = 3
 ESPERA_REINTENTO = 6   # segundos entre reintentos de subida
 PAUSA_ENTRE_ARCH = 2   # segundos entre archivos (evita rate limit)
 
+# ⬇️ MODO PRUEBA: procesar solo los primeros N archivos
+MODO_PRUEBA = True
+MAX_ARCHIVOS_PRUEBA = 3
+
 
 # ---------------------------------------------------------------------------
 # Drive helpers
@@ -57,7 +64,7 @@ def inicializar_drive_con_scopes():
         )
         return build("drive", "v3", credentials=creds, cache_discovery=False)
     except Exception as e:
-        print(f"❌ Error iniciando Drive: {e}")
+        print(f"❌ Error iniciando Drive: {e}", flush=True)
         traceback.print_exc()
         return None
 
@@ -93,6 +100,7 @@ def listar_archivos(drive, carpeta_id, solo_xlsx=True):
 
 def obtener_o_crear_carpeta_snaps(drive):
     """Busca la carpeta de snapshots dentro de CARPETA_INTERNA_ID; la crea si no existe."""
+    print(f"🔍 Buscando carpeta '{SNAP_FOLDER_NAME}' en {CARPETA_INTERNA_ID}...", flush=True)
     res = drive.files().list(
         q=(
             f"'{CARPETA_INTERNA_ID}' in parents "
@@ -108,9 +116,10 @@ def obtener_o_crear_carpeta_snaps(drive):
     archivos = res.get("files", [])
     if archivos:
         folder_id = archivos[0]["id"]
-        print(f"📁 Carpeta snapshots encontrada: {folder_id}")
+        print(f"📁 Carpeta snapshots encontrada: {folder_id}", flush=True)
         return folder_id
 
+    print(f"📁 Carpeta '{SNAP_FOLDER_NAME}' no encontrada, creando...", flush=True)
     nueva = drive.files().create(
         body={
             "name": SNAP_FOLDER_NAME,
@@ -120,7 +129,7 @@ def obtener_o_crear_carpeta_snaps(drive):
         fields="id",
         supportsAllDrives=True,
     ).execute()
-    print(f"📁 Carpeta snapshots creada: {nueva['id']}")
+    print(f"📁 Carpeta snapshots creada: {nueva['id']}", flush=True)
     return nueva["id"]
 
 
@@ -149,7 +158,7 @@ def descargar_bytes(drive, file_id, mime_type):
         fh.seek(0)
         return fh
     except Exception as e:
-        print(f"   ❌ Error descargando: {e}")
+        print(f"   ❌ Error descargando: {e}", flush=True)
         return None
 
 
@@ -159,9 +168,10 @@ def subir_como_gsheet(drive, fh, nombre_snap, snap_folder_id):
     Reintenta hasta INTENTOS_MAX veces ante errores de rate limit.
     """
     fh.seek(0)
+    # ⬇️ CAMBIADO: mimeType a application/vnd.google-apps.spreadsheet
     media = MediaIoBaseUpload(
         fh,
-        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        mimetype="application/vnd.google-apps.spreadsheet",  # ⬅️ CAMBIADO
         resumable=True,
     )
     for intento in range(INTENTOS_MAX):
@@ -178,9 +188,13 @@ def subir_como_gsheet(drive, fh, nombre_snap, snap_folder_id):
             ).execute()
             return resultado["id"]
         except HttpError as e:
+            # ⬇️ MOSTRAR DETALLE COMPLETO DEL ERROR
+            print(f"   ❌ Error {e.resp.status}: {e._get_reason()}", flush=True)
+            print(f"   📝 Contenido completo: {e.content}", flush=True)
+            
             if e.resp.status in (403, 429, 500, 503):
                 espera = ESPERA_REINTENTO * (intento + 1)
-                print(f"   ⏳ Error {e.resp.status}, reintento {intento+1}/{INTENTOS_MAX} en {espera}s...")
+                print(f"   ⏳ Reintento {intento+1}/{INTENTOS_MAX} en {espera}s...", flush=True)
                 time.sleep(espera)
             else:
                 raise
@@ -192,23 +206,36 @@ def subir_como_gsheet(drive, fh, nombre_snap, snap_folder_id):
 # ---------------------------------------------------------------------------
 
 def ejecutar_principal():
+    print("🚀 INICIANDO SNAPSHOT BUILDER", flush=True)
     inicio = time.time()
     ahora  = registrar_inicio("BOT SNAPSHOT BUILDER - Monitoreo de Liquidaciones")
 
+    print("🔑 Inicializando Drive...", flush=True)
     drive = inicializar_drive_con_scopes()
     if not drive:
+        print("❌ No se pudo inicializar Drive", flush=True)
         return
+    print("✅ Drive inicializado correctamente", flush=True)
 
     # 1. Carpeta de snapshots
+    print("📁 Obteniendo carpeta de snapshots...", flush=True)
     snap_folder_id = obtener_o_crear_carpeta_snaps(drive)
 
     # 2. SNAPs ya existentes
+    print("📋 Listando SNAPs existentes...", flush=True)
     snaps_existentes = listar_snaps_existentes(drive, snap_folder_id)
-    print(f"✅ SNAPs existentes: {len(snaps_existentes)}")
+    print(f"✅ SNAPs existentes: {len(snaps_existentes)}", flush=True)
 
     # 3. Archivos .xlsx a procesar
+    print(f"📂 Listando archivos en carpeta {CARPETA_XLSX_ID}...", flush=True)
     archivos = listar_archivos(drive, CARPETA_XLSX_ID, solo_xlsx=True)
-    print(f"📊 Archivos .xlsx encontrados: {len(archivos)}\n")
+    print(f"📊 Archivos .xlsx encontrados: {len(archivos)}", flush=True)
+
+    # ⬇️ MODO PRUEBA: limitar cantidad de archivos
+    if MODO_PRUEBA and len(archivos) > MAX_ARCHIVOS_PRUEBA:
+        archivos = archivos[:MAX_ARCHIVOS_PRUEBA]
+        print(f"⚠️  MODO PRUEBA: procesando solo {len(archivos)} archivos (de {len(archivos)})", flush=True)
+    print()
 
     procesados, saltados, errores = 0, 0, 0
     lista_errores = []
@@ -217,54 +244,59 @@ def ejecutar_principal():
         nombre_base = archivo["name"].replace(".xlsx", "").replace(".XLSX", "")
         nombre_snap = f"{SNAP_PREFIX}{nombre_base}"
 
-        print(f"[{i}/{len(archivos)}] {archivo['name']}")
+        print(f"[{i}/{len(archivos)}] {archivo['name']}", flush=True)
 
         # Saltear si ya existe
         if nombre_snap in snaps_existentes:
-            print(f"   ⏭️  SNAP ya existe, saltando.")
+            print(f"   ⏭️  SNAP ya existe, saltando.", flush=True)
             saltados += 1
             continue
 
         # Descargar
+        print(f"   ⬇️  Descargando...", flush=True)
         fh = descargar_bytes(drive, archivo["id"], archivo["mimeType"])
         if not fh:
-            print(f"   ❌ No se pudo descargar.")
+            print(f"   ❌ No se pudo descargar.", flush=True)
             errores += 1
             lista_errores.append(archivo["name"])
             continue
+        print(f"   ✅ Descargado ({fh.getbuffer().nbytes / 1024:.1f} KB)", flush=True)
 
         # Subir como Google Sheets
+        print(f"   ⬆️  Subiendo como Google Sheets...", flush=True)
         snap_id = subir_como_gsheet(drive, fh, nombre_snap, snap_folder_id)
         if snap_id:
-            print(f"   ✅ SNAP creado ({snap_id})")
+            print(f"   ✅ SNAP creado ({snap_id})", flush=True)
             snaps_existentes.add(nombre_snap)
             procesados += 1
         else:
-            print(f"   ❌ Falló la subida tras {INTENTOS_MAX} intentos.")
+            print(f"   ❌ Falló la subida tras {INTENTOS_MAX} intentos.", flush=True)
             errores += 1
             lista_errores.append(archivo["name"])
 
         # Pausa entre archivos para no saturar la API
         if i < len(archivos):
+            print(f"   ⏳ Esperando {PAUSA_ENTRE_ARCH}s...", flush=True)
             time.sleep(PAUSA_ENTRE_ARCH)
 
     # Resumen consola
     duracion = time.time() - inicio
-    print(f"\n{'='*60}")
-    print(f"✅ Creados:      {procesados}")
-    print(f"⏭️  Ya existían:  {saltados}")
-    print(f"❌ Errores:      {errores}")
-    print(f"⏱️  Tiempo:       {duracion:.0f}s ({duracion/60:.1f} min)")
-    print(f"{'='*60}")
+    print(f"\n{'='*60}", flush=True)
+    print(f"✅ Creados:      {procesados}", flush=True)
+    print(f"⏭️  Ya existían:  {saltados}", flush=True)
+    print(f"❌ Errores:      {errores}", flush=True)
+    print(f"⏱️  Tiempo:       {duracion:.0f}s ({duracion/60:.1f} min)", flush=True)
+    print(f"{'='*60}", flush=True)
 
     if lista_errores:
-        print("\nArchivos con error:")
+        print("\nArchivos con error:", flush=True)
         for e in lista_errores:
-            print(f"  ⚠️  {e}")
+            print(f"  ⚠️  {e}", flush=True)
 
     # Log de resumen
     registrar_resumen(inicio, procesados, len(archivos))
-    print(f"\n📝 Resumen registrado: {procesados} SNAPs creados, {errores} errores, {saltados} saltados")
+    print(f"\n📝 Resumen registrado: {procesados} SNAPs creados, {errores} errores, {saltados} saltados", flush=True)
+    print("🏁 SNAPSHOT BUILDER FINALIZADO", flush=True)
 
 
 if __name__ == "__main__":
