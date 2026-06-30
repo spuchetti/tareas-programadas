@@ -37,7 +37,7 @@ jobs:
             httplib2==0.22.0
 
       - name: Ejecutar snapshot builder
-        run: python src/snapshot_bot.py
+        run: python -u src/snapshot_bot.py   # ⬅️ AGREGADO -u
 
       - name: Mostrar finalización
         run: echo "✅ Snapshot builder ejecutado."
