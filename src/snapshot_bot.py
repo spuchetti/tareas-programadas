@@ -43,9 +43,9 @@ INTENTOS_MAX       = 3
 ESPERA_REINTENTO   = 6   # segundos entre reintentos de subida
 PAUSA_ENTRE_ARCH   = 2   # segundos entre archivos (evita rate limit)
 
-# Modo prueba: procesar solo los primeros N archivos
-MODO_PRUEBA          = True
-MAX_ARCHIVOS_PRUEBA  = 3
+# ⬇️ MODO PRODUCCIÓN: procesar TODOS los archivos
+MODO_PRUEBA          = False   # <--- CAMBIADO A False
+MAX_ARCHIVOS_PRUEBA  = 3       # Ya no se usa
 
 # ---------------------------------------------------------------------------
 # Drive helpers
@@ -326,10 +326,12 @@ def ejecutar_principal():
     archivos = listar_archivos(drive, CARPETA_XLSX_ID, solo_xlsx=True)
     print(f"📊 Archivos .xlsx encontrados: {len(archivos)}", flush=True)
     
-    # Modo prueba: limitar cantidad de archivos
+    # ⬇️ MODO PRODUCCIÓN: sin límite de archivos
     if MODO_PRUEBA and len(archivos) > MAX_ARCHIVOS_PRUEBA:
         archivos = archivos[:MAX_ARCHIVOS_PRUEBA]
         print(f"⚠️  MODO PRUEBA: procesando solo {len(archivos)} archivos", flush=True)
+    else:
+        print(f"🚀 MODO PRODUCCIÓN: procesando {len(archivos)} archivos", flush=True)
     
     print()
     
