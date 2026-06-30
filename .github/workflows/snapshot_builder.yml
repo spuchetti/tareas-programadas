@@ -1,0 +1,43 @@
+name: Ejecutar bot snapshot-builder
+
+on:
+  workflow_dispatch:   # Solo manual
+
+jobs:
+  run-task:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360   # 6 horas de margen
+
+    env:
+      GDRIVE_JSON:          ${{ secrets.GDRIVE_JSON }}
+      SMTP_TO_UNIFICADOR:   ${{ secrets.SMTP_TO_UNIFICADOR }}
+      SMTP_FROM:            ${{ secrets.SMTP_FROM }}
+      SMTP_PASSWORD:        ${{ secrets.SMTP_PASSWORD }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Mostrar hora actual del servidor
+        run: date
+
+      - name: Instalar Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias
+        run: |
+          pip install --upgrade pip
+          pip install \
+            google-api-python-client==2.121.0 \
+            google-auth==2.29.0 \
+            google-auth-oauthlib==1.2.0 \
+            google-auth-httplib2==0.2.0 \
+            httplib2==0.22.0
+
+      - name: Ejecutar snapshot builder
+        run: python src/snapshot_bot.py
+
+      - name: Mostrar finalización
+        run: echo "✅ Snapshot builder ejecutado."

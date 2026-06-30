@@ -1,0 +1,599 @@
+"""
+Bot de Monitoreo de Cambios en Liquidaciones
+
+Compara cada .xlsx de reparticiones contra su SNAP en Drive.
+Si hay cambios: genera adjuntos (XLSX + CSVs) y envía mail.
+Actualiza el SNAP solo después de mandar el mail (igual que el Apps Script).
+
+======= EJECUCIÓN =======
+Trigger diario desde GitHub Actions (cron 0 17 * * * = 14hs Argentina)
+O manual: workflow_dispatch
+"""
+
+import io
+import json
+import os
+import sys
+import time
+import traceback
+from datetime import datetime
+
+import openpyxl
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload, MediaIoBaseUpload
+from googleapiclient.errors import HttpError
+from google.oauth2.service_account import Credentials
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from utils.common_utils import registrar_inicio, registrar_resumen
+from utils.monitoreo_utils import (
+    CONFIG, HOJAS_ORDEN, COLS_NUMERICAS, NOMBRES_COLUMNAS,
+    leer_rango, compararHojasNormal, compararHojasCaja,
+    generar_xlsx_cambios, generar_csv_modificados, generar_csv_complementarias,
+    generar_csv_liquidacion_completa,
+    extraer_reparticion, extraer_anio_desde_nombre, hoja_a_periodo,
+    normalizar_nombre, normalizar_periodo,
+)
+from utils.registro_utils import (
+    inicializar_sheets, obtener_o_crear_hoja_registro, obtener_id_agente,
+)
+from utils.gmail_utils import enviar_email_html_con_adjuntos
+
+# ---------------------------------------------------------------------------
+# Configuración Drive
+# ---------------------------------------------------------------------------
+
+CARPETA_XLSX_ID    = CONFIG["CARPETA_ID"]
+CARPETA_INTERNA_ID = CONFIG["CARPETA_INTERNA_ID"]
+SNAP_FOLDER_NAME   = CONFIG["CARPETA_SNAPSHOTS"]
+SNAP_PREFIX        = "[SNAP] "
+
+INTENTOS_MAX     = 3
+ESPERA_REINTENTO = 6
+PAUSA_ENTRE_ARCH = 1   # segundos entre archivos
+
+
+# ---------------------------------------------------------------------------
+# Drive helpers
+# ---------------------------------------------------------------------------
+
+def inicializar_drive():
+    try:
+        cfg = json.loads(os.getenv("GDRIVE_JSON"))
+        creds = Credentials.from_service_account_info(
+            cfg,
+            scopes=[
+                "https://www.googleapis.com/auth/drive",
+                "https://www.googleapis.com/auth/spreadsheets",
+            ],
+        )
+        return build("drive", "v3", credentials=creds, cache_discovery=False)
+    except Exception as e:
+        print(f"❌ Error iniciando Drive: {e}")
+        traceback.print_exc()
+        return None
+
+
+def listar_archivos_xlsx(drive, carpeta_id):
+    mime_xlsx = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    q = (
+        f"'{carpeta_id}' in parents and trashed=false and ("
+        f"name contains '.xlsx' or mimeType='{mime_xlsx}')"
+    )
+    archivos, page_token = [], None
+    while True:
+        res = drive.files().list(
+            q=q, pageSize=200,
+            fields="nextPageToken, files(id, name, mimeType, modifiedTime)",
+            supportsAllDrives=True, includeItemsFromAllDrives=True,
+            pageToken=page_token,
+        ).execute()
+        archivos.extend(res.get("files", []))
+        page_token = res.get("nextPageToken")
+        if not page_token:
+            break
+    return archivos
+
+
+def listar_snaps(drive, snap_folder_id):
+    """Devuelve dict {nombre_snap: {id, modifiedTime}}."""
+    q = f"'{snap_folder_id}' in parents and trashed=false"
+    archivos, page_token = [], None
+    while True:
+        res = drive.files().list(
+            q=q, pageSize=200,
+            fields="nextPageToken, files(id, name, modifiedTime)",
+            supportsAllDrives=True, includeItemsFromAllDrives=True,
+            pageToken=page_token,
+        ).execute()
+        archivos.extend(res.get("files", []))
+        page_token = res.get("nextPageToken")
+        if not page_token:
+            break
+    return {a["name"]: a for a in archivos}
+
+
+def obtener_o_crear_carpeta_snaps(drive):
+    res = drive.files().list(
+        q=(
+            f"'{CARPETA_INTERNA_ID}' in parents "
+            f"and name='{SNAP_FOLDER_NAME}' "
+            f"and mimeType='application/vnd.google-apps.folder' "
+            f"and trashed=false"
+        ),
+        fields="files(id)",
+        supportsAllDrives=True, includeItemsFromAllDrives=True,
+    ).execute()
+    lst = res.get("files", [])
+    if lst:
+        fid = lst[0]["id"]
+        print(f"📁 Carpeta snapshots: {fid}")
+        return fid
+    nueva = drive.files().create(
+        body={
+            "name": SNAP_FOLDER_NAME,
+            "mimeType": "application/vnd.google-apps.folder",
+            "parents": [CARPETA_INTERNA_ID],
+        },
+        fields="id", supportsAllDrives=True,
+    ).execute()
+    print(f"📁 Carpeta snapshots creada: {nueva['id']}")
+    return nueva["id"]
+
+
+def descargar_xlsx(drive, file_id, mime_type):
+    try:
+        if mime_type == "application/vnd.google-apps.spreadsheet":
+            req = drive.files().export_media(
+                fileId=file_id,
+                mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        else:
+            req = drive.files().get_media(fileId=file_id)
+        fh = io.BytesIO()
+        downloader = MediaIoBaseDownload(fh, req)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        fh.seek(0)
+        return fh
+    except Exception as e:
+        print(f"   ❌ Error descargando: {e}")
+        return None
+
+
+def descargar_snap_xlsx(drive, snap_id):
+    """Exporta el SNAP (Google Sheets) como XLSX."""
+    return descargar_xlsx(
+        drive, snap_id,
+        "application/vnd.google-apps.spreadsheet",
+    )
+
+
+def actualizar_snap(drive, fh_xlsx, nombre_snap, snap_folder_id, snap_id_existente=None):
+    """
+    Sube el XLSX como Google Sheets en la carpeta de snaps.
+    Si ya existe uno previo, lo manda a la papelera primero.
+    """
+    if snap_id_existente:
+        try:
+            drive.files().update(
+                fileId=snap_id_existente,
+                body={"trashed": True},
+                supportsAllDrives=True,
+            ).execute()
+        except Exception:
+            pass
+
+    fh_xlsx.seek(0)
+    media = MediaIoBaseUpload(
+        fh_xlsx,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        resumable=True,
+    )
+    for intento in range(INTENTOS_MAX):
+        try:
+            resultado = drive.files().create(
+                body={
+                    "name": nombre_snap,
+                    "mimeType": "application/vnd.google-apps.spreadsheet",
+                    "parents": [snap_folder_id],
+                },
+                media_body=media,
+                fields="id",
+                supportsAllDrives=True,
+            ).execute()
+            return resultado["id"]
+        except HttpError as e:
+            if e.resp.status in (403, 429, 500, 503):
+                espera = ESPERA_REINTENTO * (intento + 1)
+                print(f"   ⏳ Error {e.resp.status}, reintento {intento+1}/{INTENTOS_MAX} en {espera}s...")
+                time.sleep(espera)
+            else:
+                raise
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Obtener nombre de hoja tolerante a variantes (° vs º)
+# ---------------------------------------------------------------------------
+
+def _normalizar_nombre_hoja(s):
+    return s.lower().replace("°", "@").replace("º", "@").replace(" ", "").strip()
+
+
+def obtener_hoja(wb, nombre_buscado):
+    objetivo = _normalizar_nombre_hoja(nombre_buscado)
+    for nombre in wb.sheetnames:
+        if _normalizar_nombre_hoja(nombre) == objetivo:
+            return wb[nombre]
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Leer datos de un workbook openpyxl
+# ---------------------------------------------------------------------------
+
+def leer_datos_hoja(ws, fila_inicio):
+    """
+    Lee filas desde fila_inicio, columnas COL_INICIO..COL_FIN.
+    Filtra filas donde el DNI (col_idx=1, 0-based offset) esté vacío o sea '-'.
+    Devuelve lista de listas de strings/floats (valores crudos).
+    """
+    col_inicio = CONFIG["COL_INICIO"]      # 1-based
+    col_fin    = CONFIG["COL_FIN"]         # 1-based
+    col_dni_offset = CONFIG["COL_DNI"] - col_inicio   # 0-based dentro del rango
+
+    filas = []
+    for row in ws.iter_rows(
+        min_row=fila_inicio, min_col=col_inicio, max_col=col_fin, values_only=True
+    ):
+        if all(c is None for c in row):
+            break
+        dni = str(row[col_dni_offset] or "").strip()
+        if dni in ("", "-", "0"):
+            continue
+        filas.append(list(row))
+    return filas
+
+
+# ---------------------------------------------------------------------------
+# Procesar un archivo
+# ---------------------------------------------------------------------------
+
+def procesar_archivo(drive, sheets_svc, archivo, snap_info, snap_folder_id, snaps_dict):
+    nombre    = archivo["name"]
+    es_caja   = "caja" in nombre.lower()
+    fila_ini  = CONFIG["FILA_INICIO_CAJA"] if es_caja else CONFIG["FILA_INICIO_DEFAULT"]
+    nombre_base = nombre.replace(".xlsx", "").replace(".XLSX", "")
+    nombre_snap = f"{SNAP_PREFIX}{nombre_base}"
+
+    # ── 1. Chequeo de fecha: ¿cambió el archivo desde el último SNAP? ──
+    snap_info_actual = snaps_dict.get(nombre_snap)
+    if snap_info_actual:
+        mod_xlsx = archivo.get("modifiedTime", "")
+        mod_snap = snap_info_actual.get("modifiedTime", "")
+        if mod_xlsx and mod_snap and mod_xlsx <= mod_snap:
+            print(f"  ⏭️  {nombre}: sin cambios.")
+            return "skip"
+
+    print(f"  📄 {nombre}: procesando...")
+
+    # ── 2. Descargar XLSX actual ──
+    fh_actual = descargar_xlsx(drive, archivo["id"], archivo["mimeType"])
+    if not fh_actual:
+        raise RuntimeError("No se pudo descargar el archivo.")
+
+    wb_actual = openpyxl.load_workbook(fh_actual, data_only=True, read_only=True)
+
+    # ── 3. Hoja de registro de agentes ──
+    hoja_registro = obtener_o_crear_hoja_registro(sheets_svc, nombre)
+
+    # Registrar/actualizar agentes del archivo actual
+    col_dni_offset = CONFIG["COL_DNI"] - CONFIG["COL_INICIO"]
+    for nombre_hoja in HOJAS_ORDEN:
+        ws = obtener_hoja(wb_actual, nombre_hoja)
+        if not ws:
+            continue
+        for fila in leer_datos_hoja(ws, fila_ini):
+            cuil   = str(fila[0] or "").strip()
+            dni    = str(fila[col_dni_offset] or "").strip()
+            nombre_ag = str(fila[3] or "").strip()
+            if cuil or dni or nombre_ag:
+                obtener_id_agente(cuil, dni, nombre_ag, hoja_registro)
+
+    # ── 4. Sin SNAP previo → guardar SNAP inicial y salir ──
+    if not snap_info_actual:
+        fh_actual.seek(0)
+        nuevo_id = actualizar_snap(drive, fh_actual, nombre_snap, snap_folder_id, None)
+        wb_actual.close()
+        if nuevo_id:
+            snaps_dict[nombre_snap] = {"id": nuevo_id, "modifiedTime": ""}
+        print(f"  ✅ {nombre}: snapshot inicial creado.")
+        return "procesado"
+
+    # ── 5. Descargar SNAP anterior y comparar ──
+    fh_snap = descargar_snap_xlsx(drive, snap_info_actual["id"])
+    if not fh_snap:
+        raise RuntimeError("No se pudo descargar el SNAP.")
+    wb_snap = openpyxl.load_workbook(fh_snap, data_only=True, read_only=True)
+
+    cambios_por_hoja = []
+    reparticion = extraer_reparticion(nombre)
+    anio        = extraer_anio_desde_nombre(nombre)
+
+    for nombre_hoja in HOJAS_ORDEN:
+        ws_actual = obtener_hoja(wb_actual, nombre_hoja)
+        ws_snap   = obtener_hoja(wb_snap,   nombre_hoja)
+        if not ws_actual or not ws_snap:
+            continue
+
+        datos_actual = leer_datos_hoja(ws_actual, fila_ini)
+        datos_snap   = leer_datos_hoja(ws_snap,   fila_ini)
+
+        if es_caja:
+            resultado = compararHojasCaja(datos_actual, datos_snap, hoja_registro)
+        else:
+            resultado = compararHojasNormal(datos_actual, datos_snap, hoja_registro)
+
+        cambios  = resultado["cambios"]
+        mapa_act = resultado["mapa_actual"]
+
+        if cambios:
+            # Si el snap estaba vacío → carga inicial, sin reporte
+            if not datos_snap and datos_actual:
+                print(f"  → {nombre_hoja}: carga inicial, sin reporte.")
+                continue
+            cambios_por_hoja.append({
+                "hoja": nombre_hoja,
+                "cambios": cambios,
+                "mapa_actual": mapa_act,
+            })
+
+    wb_actual.close()
+    wb_snap.close()
+
+    # ── 6. Generar adjuntos + mail + actualizar SNAP ──
+    if cambios_por_hoja:
+        adjuntos_rutas = _generar_adjuntos(cambios_por_hoja, reparticion, anio, nombre, es_caja)
+        enviar_mail_cambios(nombre, cambios_por_hoja, es_caja, reparticion, anio, adjuntos_rutas)
+        # Actualizar SNAP solo después del mail exitoso
+        fh_actual.seek(0)
+        nuevo_id = actualizar_snap(
+            drive, fh_actual, nombre_snap, snap_folder_id, snap_info_actual["id"]
+        )
+        if nuevo_id:
+            snaps_dict[nombre_snap] = {"id": nuevo_id, "modifiedTime": ""}
+        total = sum(len(h["cambios"]) for h in cambios_por_hoja)
+        print(f"  ✅ {nombre}: {total} cambios notificados.")
+    else:
+        fh_actual.seek(0)
+        actualizar_snap(
+            drive, fh_actual, nombre_snap, snap_folder_id, snap_info_actual["id"]
+        )
+        print(f"  ✅ {nombre}: sin cambios reportables.")
+
+    return "procesado"
+
+
+# ---------------------------------------------------------------------------
+# Generar adjuntos en disco temporal
+# ---------------------------------------------------------------------------
+
+def _generar_adjuntos(cambios_por_hoja, reparticion, anio, nombre_archivo, es_caja):
+    """
+    Genera los archivos adjuntos en /tmp y devuelve lista de rutas.
+    """
+    os.makedirs("/tmp/monitoreo", exist_ok=True)
+    rutas = []
+
+    for bloque in cambios_por_hoja:
+        nombre_hoja = bloque["hoja"]
+        cambios     = bloque["cambios"]
+        mapa_actual = bloque["mapa_actual"]
+        periodo     = hoja_a_periodo(nombre_hoja, anio)
+
+        modifs = [c for c in cambios if c["tipo"] == "modificado"]
+        elims  = [c for c in cambios if c["tipo"] == "eliminado"]
+        nuevos = [c for c in cambios if c["tipo"] == "nuevo"]
+
+        # Adjunto 1: XLSX de cambios
+        if modifs or elims or nuevos:
+            ruta_xlsx = f"/tmp/monitoreo/Modificaciones_{normalizar_nombre(reparticion)}_{normalizar_periodo(periodo)}.xlsx"
+            generar_xlsx_cambios(modifs, elims, nuevos, periodo, reparticion, ruta_xlsx)
+            rutas.append(ruta_xlsx)
+
+        # Adjunto 2: CSV modificados/nuevos
+        if modifs or nuevos:
+            ruta_csv = f"/tmp/monitoreo/Modificaciones_{normalizar_nombre(reparticion)}_{normalizar_periodo(periodo)}.csv"
+            generar_csv_modificados(modifs, nuevos, ruta_csv)
+            rutas.append(ruta_csv)
+
+        # Adjunto 3: CSV complementarias (solo modo normal)
+        if not es_caja:
+            ruta_comp = f"/tmp/monitoreo/Complementarias_{normalizar_nombre(reparticion)}_{normalizar_periodo(periodo)}.csv"
+            hay_comp = generar_csv_complementarias(mapa_actual, ruta_comp)
+            if hay_comp:
+                rutas.append(ruta_comp)
+
+        # Adjunto 4: CSV liquidación completa (ordinarias en normal, todas en caja)
+        ruta_rect = f"/tmp/monitoreo/Rectificativa_{normalizar_nombre(reparticion)}_{normalizar_periodo(periodo)}.csv"
+        generar_csv_liquidacion_completa(mapa_actual, es_caja, ruta_rect)
+        rutas.append(ruta_rect)
+
+    return rutas
+
+
+# ---------------------------------------------------------------------------
+# Mail de cambios
+# ---------------------------------------------------------------------------
+
+def enviar_mail_cambios(nombre_archivo, cambios_por_hoja, es_caja, reparticion, anio, adjuntos_rutas):
+    total  = sum(len(h["cambios"]) for h in cambios_por_hoja)
+    elims  = sum(len([c for c in h["cambios"] if c["tipo"] == "eliminado"]) for h in cambios_por_hoja)
+    nuevos = sum(len([c for c in h["cambios"] if c["tipo"] == "nuevo"])     for h in cambios_por_hoja)
+    modifs = sum(len([c for c in h["cambios"] if c["tipo"] == "modificado"])for h in cambios_por_hoja)
+
+    periodos     = [hoja_a_periodo(h["hoja"], anio) for h in cambios_por_hoja]
+    periodos_str = (
+        " y ".join(periodos) if len(periodos) <= 2
+        else ", ".join(periodos[:-1]) + " y " + periodos[-1]
+    ).upper()
+    label = "PERIODO" if len(periodos) == 1 else "PERIODOS"
+    asunto = f"RECTIFICATIVA | OSER - {reparticion} | {label}: {periodos_str}"
+
+    # ── Construir filas de periodos para el HTML ──
+    filas_periodos = ""
+    for bloque in cambios_por_hoja:
+        periodo  = hoja_a_periodo(bloque["hoja"], anio)
+        n_elims  = len([c for c in bloque["cambios"] if c["tipo"] == "eliminado"])
+        n_nuevos = len([c for c in bloque["cambios"] if c["tipo"] == "nuevo"])
+        n_modifs = len([c for c in bloque["cambios"] if c["tipo"] == "modificado"])
+
+        badges = ""
+        if n_elims  > 0: badges += f'<span style="font-size:11px;font-weight:500;padding:3px 10px;border-radius:4px;white-space:nowrap;background:#fff1f2;color:#9f1239;border:0.5px solid #fecdd3;margin-left:6px;">{n_elims} eliminado{"s" if n_elims!=1 else ""}</span>'
+        if n_nuevos > 0: badges += f'<span style="font-size:11px;font-weight:500;padding:3px 10px;border-radius:4px;white-space:nowrap;background:#f0fdf4;color:#14532d;border:0.5px solid #bbf7d0;margin-left:6px;">{n_nuevos} nuevo{"s" if n_nuevos!=1 else ""}</span>'
+        if n_modifs > 0: badges += f'<span style="font-size:11px;font-weight:500;padding:3px 10px;border-radius:4px;white-space:nowrap;background:#eff6ff;color:#1e3a8a;border:0.5px solid #bfdbfe;margin-left:6px;">{n_modifs} modificado{"s" if n_modifs!=1 else ""}</span>'
+
+        filas_periodos += f"""
+    <tr>
+      <td style="padding:12px 0;border-bottom:0.5px solid #e5e7eb;font-size:14px;font-weight:500;color:#111827;vertical-align:middle;">{periodo}</td>
+      <td style="padding:12px 0;border-bottom:0.5px solid #e5e7eb;text-align:right;vertical-align:middle;">{badges}</td>
+    </tr>"""
+
+    # ── Filas de adjuntos ──
+    filas_adj = ""
+    for ruta in adjuntos_rutas:
+        fname = os.path.basename(ruta)
+        ext   = fname.rsplit(".", 1)[-1].upper()
+        bg    = "#dcfce7" if ext == "XLSX" else "#dbeafe"
+        col   = "#14532d" if ext == "XLSX" else "#1e3a8a"
+        filas_adj += f"""<tr>
+      <td style="width:36px;padding:6px 10px 6px 0;vertical-align:middle;">
+        <div style="width:32px;height:32px;border-radius:6px;background:{bg};color:{col};font-size:11px;font-weight:600;text-align:center;line-height:32px;">{ext}</div>
+      </td>
+      <td style="padding:6px 0;vertical-align:middle;">
+        <div style="font-size:13px;font-weight:500;color:#111827;">{fname}</div>
+      </td>
+    </tr>"""
+
+    adj_html = (
+        f'<div style="background:#f8fafc;border:0.5px solid #e5e7eb;border-radius:8px;padding:16px;margin-top:24px;">'
+        f'<div style="font-size:11px;font-weight:500;letter-spacing:.06em;text-transform:uppercase;color:#9ca3af;margin-bottom:12px;">Archivos adjuntos</div>'
+        f'<table style="width:100%;border-collapse:collapse;">{filas_adj}</table></div>'
+    ) if adjuntos_rutas else ""
+
+    nombre_display = nombre_archivo.replace(".xlsx", "").replace(".XLSX", "")
+
+    html = f"""
+<div style="font-family:'Segoe UI',Arial,sans-serif;font-size:14px;color:#111827;max-width:640px;">
+
+  <div style="background:#0d2a5e;border-radius:12px 12px 0 0;padding:28px 32px 24px;border-bottom:3px solid #1a4fa0;">
+    <div style="font-size:11px;font-weight:500;letter-spacing:.1em;color:#5b8ad4;text-transform:uppercase;margin-bottom:10px;">
+      <span style="color:#3aaa35;">●</span> Monitoreo de liquidaciones
+    </div>
+    <div style="font-size:21px;font-weight:500;color:#f0f6ff;line-height:1.3;margin-bottom:4px;">
+      Cambios detectados - {reparticion}
+    </div>
+    <div style="font-size:13px;color:#5b8ad4;">{nombre_display}</div>
+  </div>
+
+  <table style="width:100%;border-collapse:collapse;background:#102d6b;border-bottom:1px solid #163580;">
+    <tr>
+      <td style="padding:14px 20px;text-align:center;border-right:0.5px solid #1a3d7a;">
+        <div style="font-size:10px;letter-spacing:.08em;color:#5b8ad4;text-transform:uppercase;margin-bottom:3px;">Total cambios</div>
+        <div style="font-size:22px;font-weight:500;color:#f0f6ff;">{total}</div>
+      </td>
+      <td style="padding:14px 20px;text-align:center;border-right:0.5px solid #1a3d7a;">
+        <div style="font-size:10px;letter-spacing:.08em;color:#5b8ad4;text-transform:uppercase;margin-bottom:3px;">Eliminados</div>
+        <div style="font-size:22px;font-weight:500;color:#f87171;">{elims}</div>
+      </td>
+      <td style="padding:14px 20px;text-align:center;border-right:0.5px solid #1a3d7a;">
+        <div style="font-size:10px;letter-spacing:.08em;color:#5b8ad4;text-transform:uppercase;margin-bottom:3px;">Nuevos</div>
+        <div style="font-size:22px;font-weight:500;color:#4ade80;">{nuevos}</div>
+      </td>
+      <td style="padding:14px 20px;text-align:center;">
+        <div style="font-size:10px;letter-spacing:.08em;color:#5b8ad4;text-transform:uppercase;margin-bottom:3px;">Modificados</div>
+        <div style="font-size:22px;font-weight:500;color:#60a5fa;">{modifs}</div>
+      </td>
+    </tr>
+  </table>
+
+  <div style="background:#ffffff;border:0.5px solid #e5e7eb;border-top:none;padding:28px 32px;border-radius:0 0 12px 12px;">
+    <div style="font-size:11px;font-weight:500;letter-spacing:.08em;color:#9ca3af;text-transform:uppercase;margin-bottom:12px;">Detalle por periodo</div>
+    <table style="width:100%;border-collapse:collapse;">
+      <thead>
+        <tr>
+          <th style="font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#9ca3af;padding:0 0 8px;text-align:left;border-bottom:0.5px solid #e5e7eb;font-weight:500;">Periodo</th>
+          <th style="font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#9ca3af;padding:0 0 8px;text-align:right;border-bottom:0.5px solid #e5e7eb;font-weight:500;">Registros</th>
+        </tr>
+      </thead>
+      <tbody>{filas_periodos}</tbody>
+    </table>
+    {adj_html}
+    <table style="width:100%;border-collapse:collapse;margin-top:24px;border-top:0.5px solid #e5e7eb;">
+      <tr>
+        <td style="padding-top:14px;font-size:11px;color:#9ca3af;">
+          Generado automáticamente por <strong>APORTES</strong> · Monitoreo de Liquidaciones
+        </td>
+      </tr>
+    </table>
+  </div>
+
+</div>"""
+
+    enviar_email_html_con_adjuntos(asunto, html, adjuntos_rutas, "SMTP_TO_MONITOREO")
+
+
+# ---------------------------------------------------------------------------
+# Principal
+# ---------------------------------------------------------------------------
+
+def ejecutar_principal():
+    inicio = time.time()
+    registrar_inicio("BOT MONITOREO DE LIQUIDACIONES")
+
+    drive = inicializar_drive()
+    if not drive:
+        return
+
+    sheets_svc = inicializar_sheets()
+    if not sheets_svc:
+        print("❌ No se pudo inicializar Sheets.")
+        return
+
+    snap_folder_id = obtener_o_crear_carpeta_snaps(drive)
+    snaps_dict     = listar_snaps(drive, snap_folder_id)
+    archivos       = listar_archivos_xlsx(drive, CARPETA_XLSX_ID)
+
+    print(f"📊 Archivos: {len(archivos)}  |  SNAPs existentes: {len(snaps_dict)}")
+    print("═" * 60)
+
+    procesados, saltados, errores = 0, 0, 0
+
+    for i, archivo in enumerate(archivos, 1):
+        print(f"[{i}/{len(archivos)}] {archivo['name']}")
+        try:
+            res = procesar_archivo(
+                drive, sheets_svc, archivo, None, snap_folder_id, snaps_dict
+            )
+            if res == "skip":
+                saltados += 1
+            else:
+                procesados += 1
+        except Exception as e:
+            errores += 1
+            print(f"  ❌ Error: {e}")
+            traceback.print_exc()
+
+        if i < len(archivos):
+            time.sleep(PAUSA_ENTRE_ARCH)
+
+    print("═" * 60)
+    registrar_resumen(inicio, procesados + saltados, len(archivos))
+    print(f"✅ Procesados: {procesados}  |  ⏭️  Sin cambios: {saltados}  |  ❌ Errores: {errores}")
+
+
+if __name__ == "__main__":
+    ejecutar_principal()
