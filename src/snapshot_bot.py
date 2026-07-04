@@ -1,0 +1,311 @@
+"""
+Bot de construcción de Snapshots para Monitoreo de Liquidaciones
+
+Descarga cada .xlsx de la carpeta de reparticiones y lo sube como
+Google Sheets en la carpeta de snapshots. Los SNAPs ya existentes
+se saltean automáticamente.
+
+======= EJECUCIÓN =======
+Correr manualmente desde GitHub Actions → workflow_dispatch
+O bien: python src/snapshot_bot.py
+"""
+
+import io
+import os
+import sys
+import time
+import traceback
+
+# Forzar flush de prints para ver logs en tiempo real en GitHub Actions
+sys.stdout.reconfigure(line_buffering=True)
+
+from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
+from googleapiclient.errors import HttpError
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from utils.common_utils import registrar_inicio, registrar_resumen
+from utils.auth_utils import (
+    obtener_drive_service_oauth,
+    obtener_sheets_service_oauth,
+    CredencialesFaltantesError,
+)
+from utils.registro_utils import verificar_y_ampliar_capacidad
+
+# ---------------------------------------------------------------------------
+# Configuración
+# ---------------------------------------------------------------------------
+#
+# snapshot_bot es el ÚNICO proceso del proyecto que usa OAuth
+# (services.aportes.oser@gmail.com) en vez de la Service Account, porque es
+# el único que necesita CREAR archivos nuevos en Drive (snapshots y, cuando
+# hace falta, nuevas planillas de registro). Se ejecuta solo manualmente
+# (workflow_dispatch), cuando se sabe que hay reparticiones nuevas para
+# crear — no tiene trigger automático.
+
+CARPETA_XLSX_ID    = "1mRkd5gCHe0dOL0WGNcyZ20V4uK_l9KVn" #"1_Xb2jrtr3Sjwi8-2nhT2k53KZ6CLE5hJ"   # Todas las reparticiones
+CARPETA_INTERNA_ID = "1XJj3pMySybGeK7cW5-PRFPf1q5w2Dch5"   # Carpeta interna OSER
+SNAP_FOLDER_NAME   = "_snapshots_liquidaciones"
+SNAP_PREFIX        = "[SNAP] "
+
+INTENTOS_MAX       = 3
+ESPERA_REINTENTO   = 6   # segundos entre reintentos de subida
+PAUSA_ENTRE_ARCH   = 2   # segundos entre archivos (evita rate limit)
+
+# Modo producción: procesar TODOS los archivos
+MODO_PRUEBA          = False
+MAX_ARCHIVOS_PRUEBA  = 3
+
+# ---------------------------------------------------------------------------
+# Drive helpers
+# ---------------------------------------------------------------------------
+
+def inicializar_drive_con_scopes():
+    """Inicializa el servicio de Google Drive usando OAuth 2.0 con refresh token."""
+    try:
+        return obtener_drive_service_oauth()
+    except CredencialesFaltantesError as e:
+        print(f"❌ {e}", flush=True)
+        return None
+    except Exception as e:
+        print(f"❌ Error iniciando Drive: {e}", flush=True)
+        traceback.print_exc()
+        return None
+
+
+def listar_archivos(drive, carpeta_id, solo_xlsx=True):
+    """Lista todos los archivos de una carpeta de Drive con paginación."""
+    mime_xlsx = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    if solo_xlsx:
+        q = (
+            f"'{carpeta_id}' in parents and trashed=false and ("
+            f"name contains '.xlsx' or mimeType='{mime_xlsx}')"
+        )
+    else:
+        q = f"'{carpeta_id}' in parents and trashed=false"
+    archivos = []
+    page_token = None
+    while True:
+        res = drive.files().list(
+            q=q,
+            pageSize=200,
+            fields="nextPageToken, files(id, name, mimeType)",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
+            pageToken=page_token,
+        ).execute()
+        archivos.extend(res.get("files", []))
+        page_token = res.get("nextPageToken")
+        if not page_token:
+            break
+    return archivos
+
+
+def obtener_o_crear_carpeta_snaps(drive):
+    """Busca la carpeta de snapshots dentro de CARPETA_INTERNA_ID. Si no existe, la crea."""
+    print(f"🔍 Buscando carpeta '{SNAP_FOLDER_NAME}' en {CARPETA_INTERNA_ID}...", flush=True)
+    res = drive.files().list(
+        q=(
+            f"'{CARPETA_INTERNA_ID}' in parents "
+            f"and name='{SNAP_FOLDER_NAME}' "
+            f"and mimeType='application/vnd.google-apps.folder' "
+            f"and trashed=false"
+        ),
+        fields="files(id)",
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True,
+    ).execute()
+    archivos = res.get("files", [])
+    if archivos:
+        folder_id = archivos[0]["id"]
+        print(f"📁 Carpeta snapshots encontrada: {folder_id}", flush=True)
+        return folder_id
+    print(f"📁 Carpeta '{SNAP_FOLDER_NAME}' no encontrada, creando...", flush=True)
+    nueva = drive.files().create(
+        body={
+            "name": SNAP_FOLDER_NAME,
+            "mimeType": "application/vnd.google-apps.folder",
+            "parents": [CARPETA_INTERNA_ID],
+        },
+        fields="id",
+        supportsAllDrives=True,
+    ).execute()
+    print(f"📁 Carpeta snapshots creada: {nueva['id']}", flush=True)
+    return nueva["id"]
+
+
+def listar_snaps_existentes(drive, snap_folder_id):
+    """Devuelve un set con los nombres de SNAPs ya creados."""
+    archivos = listar_archivos(drive, snap_folder_id, solo_xlsx=False)
+    return {a["name"] for a in archivos}
+
+
+def descargar_bytes(drive, file_id, mime_type):
+    """Descarga un archivo de Drive y devuelve su contenido como BytesIO."""
+    try:
+        if mime_type == "application/vnd.google-apps.spreadsheet":
+            req = drive.files().export_media(
+                fileId=file_id,
+                mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        else:
+            req = drive.files().get_media(fileId=file_id)
+        fh = io.BytesIO()
+        downloader = MediaIoBaseDownload(fh, req)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        fh.seek(0)
+        return fh
+    except Exception as e:
+        print(f"   ❌ Error descargando: {e}", flush=True)
+        return None
+
+
+def subir_como_gsheet(drive, fh, nombre_snap, snap_folder_id):
+    """Sube un archivo .xlsx como Google Sheets usando enfoque de dos pasos."""
+    fh.seek(0)
+    for intento in range(INTENTOS_MAX):
+        try:
+            file_metadata = {
+                "name": nombre_snap,
+                "mimeType": "application/vnd.google-apps.spreadsheet",
+                "parents": [snap_folder_id]
+            }
+            print(f"   📄 Creando archivo vacío...", flush=True)
+            file = drive.files().create(
+                body=file_metadata,
+                fields="id",
+                supportsAllDrives=True
+            ).execute()
+            file_id = file.get("id")
+            print(f"   📄 Archivo creado (ID: {file_id})", flush=True)
+            fh.seek(0)
+            media = MediaIoBaseUpload(
+                fh,
+                mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                resumable=True
+            )
+            print(f"   ⬆️  Subiendo contenido...", flush=True)
+            updated_file = drive.files().update(
+                fileId=file_id,
+                media_body=media,
+                fields="id",
+                supportsAllDrives=True
+            ).execute()
+            print(f"   ✅ Contenido subido", flush=True)
+            return updated_file.get("id")
+        except HttpError as e:
+            print(f"   ❌ Error {e.resp.status}: {e._get_reason()}", flush=True)
+            if e.resp.status in (403, 429, 500, 503):
+                espera = ESPERA_REINTENTO * (intento + 1)
+                print(f"   ⏳ Reintento {intento+1}/{INTENTOS_MAX} en {espera}s...", flush=True)
+                time.sleep(espera)
+            else:
+                print(f"   📝 Detalle: {e.content}", flush=True)
+                return None
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Principal
+# ---------------------------------------------------------------------------
+
+def ejecutar_principal():
+    print("🚀 INICIANDO SNAPSHOT BUILDER", flush=True)
+    inicio = time.time()
+    ahora = registrar_inicio("BOT SNAPSHOT BUILDER - Monitoreo de Liquidaciones")
+    
+    print("🔑 Inicializando Drive con OAuth...", flush=True)
+    drive = inicializar_drive_con_scopes()
+    if not drive:
+        print("❌ No se pudo inicializar Drive", flush=True)
+        return
+    print("✅ Drive inicializado correctamente", flush=True)
+
+    # ── Ampliar capacidad del registro de agentes si hace falta ─────────────
+    # Único paso del proyecto que puede crear una planilla _registro_agentes_N
+    # nueva (bootstrap o por adelantado al acercarse a 150 hojas). El resto
+    # de los bots corre con Service Account y solo espera encontrar lugar.
+    print("📋 Verificando capacidad del registro de agentes...", flush=True)
+    try:
+        sheets_oauth = obtener_sheets_service_oauth()
+        verificar_y_ampliar_capacidad(sheets_oauth, drive)
+    except Exception as e:
+        print(f"⚠️  No se pudo verificar/ampliar la capacidad del registro: {e}", flush=True)
+        traceback.print_exc()
+
+    print("📁 Obteniendo carpeta de snapshots...", flush=True)
+    snap_folder_id = obtener_o_crear_carpeta_snaps(drive)
+    
+    print("📋 Listando SNAPs existentes...", flush=True)
+    snaps_existentes = listar_snaps_existentes(drive, snap_folder_id)
+    print(f"✅ SNAPs existentes: {len(snaps_existentes)}", flush=True)
+    
+    print(f"📂 Listando archivos en carpeta {CARPETA_XLSX_ID}...", flush=True)
+    archivos = listar_archivos(drive, CARPETA_XLSX_ID, solo_xlsx=True)
+    print(f"📊 Archivos .xlsx encontrados: {len(archivos)}", flush=True)
+    
+    if MODO_PRUEBA and len(archivos) > MAX_ARCHIVOS_PRUEBA:
+        archivos = archivos[:MAX_ARCHIVOS_PRUEBA]
+        print(f"⚠️  MODO PRUEBA: procesando solo {len(archivos)} archivos", flush=True)
+    else:
+        print(f"🚀 MODO PRODUCCIÓN: procesando {len(archivos)} archivos", flush=True)
+    print()
+    
+    procesados, saltados, errores = 0, 0, 0
+    lista_errores = []
+    
+    for i, archivo in enumerate(archivos, 1):
+        nombre_base = archivo["name"].replace(".xlsx", "").replace(".XLSX", "")
+        nombre_snap = f"{SNAP_PREFIX}{nombre_base}"
+        print(f"[{i}/{len(archivos)}] {archivo['name']}", flush=True)
+        
+        if nombre_snap in snaps_existentes:
+            print(f"   ⏭️  SNAP ya existe, saltando.", flush=True)
+            saltados += 1
+            continue
+        
+        print(f"   ⬇️  Descargando...", flush=True)
+        fh = descargar_bytes(drive, archivo["id"], archivo["mimeType"])
+        if not fh:
+            print(f"   ❌ No se pudo descargar.", flush=True)
+            errores += 1
+            lista_errores.append(archivo["name"])
+            continue
+        tamanio_kb = fh.getbuffer().nbytes / 1024
+        print(f"   ✅ Descargado ({tamanio_kb:.1f} KB)", flush=True)
+        
+        print(f"   ⬆️  Subiendo como Google Sheets...", flush=True)
+        snap_id = subir_como_gsheet(drive, fh, nombre_snap, snap_folder_id)
+        if snap_id:
+            print(f"   ✅ SNAP creado ({snap_id})", flush=True)
+            snaps_existentes.add(nombre_snap)
+            procesados += 1
+        else:
+            print(f"   ❌ Falló la subida tras {INTENTOS_MAX} intentos.", flush=True)
+            errores += 1
+            lista_errores.append(archivo["name"])
+        
+        if i < len(archivos):
+            print(f"   ⏳ Esperando {PAUSA_ENTRE_ARCH}s...", flush=True)
+            time.sleep(PAUSA_ENTRE_ARCH)
+    
+    duracion = time.time() - inicio
+    print(f"\n{'='*60}", flush=True)
+    print(f"✅ Creados:      {procesados}", flush=True)
+    print(f"⏭️  Ya existían:  {saltados}", flush=True)
+    print(f"❌ Errores:      {errores}", flush=True)
+    print(f"⏱️  Tiempo:       {duracion:.0f}s ({duracion/60:.1f} min)", flush=True)
+    print(f"{'='*60}", flush=True)
+    if lista_errores:
+        print("\nArchivos con error:", flush=True)
+        for e in lista_errores:
+            print(f"  ⚠️  {e}", flush=True)
+    registrar_resumen(inicio, procesados, len(archivos))
+    print(f"\n📝 Resumen registrado: {procesados} SNAPs creados, {errores} errores, {saltados} saltados", flush=True)
+    print("🏁 SNAPSHOT BUILDER FINALIZADO", flush=True)
+
+
+if __name__ == "__main__":
+    ejecutar_principal()

@@ -30,7 +30,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Luego el resto de imports
 from utils.common_utils import (
     registrar_inicio, registrar_resumen, 
-    nombre_mes, obtener_mes_anterior, obtener_anio, crear_directorio_salida
+    nombre_mes, obtener_mes_anterior, obtener_anio, crear_directorio_salida,
+    leer_override_env
 )
 from utils.drive_utils import (
     inicializar_drive, obtener_archivos, descargar_archivo,
@@ -45,8 +46,8 @@ from utils.gmail_utils import (
 # Configuración
 # Permite override manual vía workflow_dispatch inputs (MES_OVERRIDE y ANIO_OVERRIDE) por formulario UI.
 # Cuando corre por schedule, las variables llegan vacías y se usa la lógica automática.
-_mes_override = os.getenv("MES_OVERRIDE", "").strip()
-_anio_override = os.getenv("ANIO_OVERRIDE", "").strip()
+_mes_override = leer_override_env("MES_OVERRIDE")
+_anio_override = leer_override_env("ANIO_OVERRIDE")
 
 MES_ACTUAL = _mes_override if _mes_override else obtener_mes_anterior()  # Mes que estamos procesando
 
@@ -54,7 +55,10 @@ MES_ACTUAL = _mes_override if _mes_override else obtener_mes_anterior()  # Mes q
 def obtener_nombre_csv():
     """Obtiene el nombre del archivo CSV basado en el mes y año actual"""
     mes_actual_formateado = MES_ACTUAL
-    anio_actual = obtener_anio(mes_actual_formateado)
+    # Antes: ignoraba _anio_override acá, aunque sí lo respetaba más abajo
+    # (línea ~1065) al calcular los datos. Eso podía generar un CSV con un
+    # año en el nombre distinto al año realmente procesado.
+    anio_actual = obtener_anio(mes_actual_formateado, anio_override=_anio_override)
     nombre_mes_actual = nombre_mes(mes_actual_formateado)
     
     # Formato: Unificado_MesAño.csv (ej: Unificado_Noviembre2025.csv)
@@ -953,7 +957,7 @@ def extraer_y_preparar_datos_mes_periodo(drive, archivos_excel, periodo):
         
         # Guardar archivo CSV
         mes_formateado = nombre_mes(periodo)
-        anio_calculado = obtener_anio(periodo)
+        anio_calculado = obtener_anio(periodo, anio_override=_anio_override)
         nombre_reporte = f"Aportantes_{mes_formateado}{anio_calculado}.csv"
         carpeta = crear_directorio_salida()
         ruta_reporte = os.path.join(carpeta, nombre_reporte)
@@ -1046,13 +1050,16 @@ def combinar_con_existente(csv_existente, datos_nuevos):
     return encabezados, datos_combinados
 
 def determina_mes_a_procesar(mes_actual):
-    
+    # Nota: se usa '°' (grado, U+00B0) para "1° sac"/"2° sac" en todo el
+    # proyecto (ver HOJAS_ORDEN en monitoreo_utils.py y MESES en
+    # reporte_anual_bot.py). nombre_mes()/obtener_anio() ahora normalizan
+    # 'º'→'°' de todas formas, pero se corrige acá también por prolijidad.
     if mes_actual == "12":
-        return ["12", "2º sac"]
-    
+        return ["12", "2° sac"]
+
     if mes_actual == "06":
-        return ["06", "1º sac"]
-    
+        return ["06", "1° sac"]
+
     else:
         return [mes_actual]
 
@@ -1062,7 +1069,7 @@ def ejecutar_principal():
     
     inicio = time.time()
     mes_actual = MES_ACTUAL
-    anio_actual = int(_anio_override) if _anio_override else obtener_anio(mes_actual)
+    anio_actual = obtener_anio(mes_actual, anio_override=_anio_override)
     
     periodos = determina_mes_a_procesar(mes_actual)
    

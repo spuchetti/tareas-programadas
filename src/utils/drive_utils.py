@@ -3,14 +3,13 @@ Funciones para interactuar con Google Drive
 """
 
 import io
-import json
 import os
 import time
 import traceback
 from googleapiclient.http import MediaIoBaseDownload
-from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-from google.oauth2.service_account import Credentials
+
+from utils.auth_utils import obtener_drive_service_sa, CredencialesFaltantesError
 
 # Configuración común
 FOLDER_ID_REPARTICIONES = "1_Xb2jrtr3Sjwi8-2nhT2k53KZ6CLE5hJ"
@@ -20,12 +19,18 @@ PAGINA_TAMANIO = 200  # Máximo por página
 
 
 def inicializar_drive():
-    """Inicializa el servicio de Google Drive"""
+    """
+    Inicializa el servicio de Google Drive con la Service Account (GDRIVE_JSON).
+    Esta es la credencial de uso general del proyecto: puede leer, descargar,
+    exportar y editar contenido de archivos existentes, pero NO puede crear
+    archivos nuevos fuera de una Unidad Compartida (no la tenemos). La
+    creación de archivos nuevos está reservada a snapshot_bot.py (OAuth).
+    """
     try:
-        cfg = json.loads(os.getenv("GDRIVE_JSON"))
-        creds = Credentials.from_service_account_info(cfg)
-        servicio = build("drive", "v3", credentials=creds, cache_discovery=False)
-        return servicio
+        return obtener_drive_service_sa()
+    except CredencialesFaltantesError as e:
+        print(f"❌ {e}")
+        return None
     except Exception as e:
         print(f"❌ Error iniciando Drive: {e}")
         traceback.print_exc()

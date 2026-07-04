@@ -76,11 +76,15 @@ jobs:
             exit 1
           fi
 
+      - name: Calcular nombre de artifact
+        id: fecha
+        run: echo "yyyymm=$(date +%Y-%m)" >> "$GITHUB_OUTPUT"
+
       - name: Subir CSV generado a artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: unificado-mensual-$(date +%Y-%m)
+          name: unificado-mensual-${{ steps.fecha.outputs.yyyymm }}
           path: generados/*.csv
           retention-days: 30
 

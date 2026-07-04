@@ -25,7 +25,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from utils.common_utils import (
     registrar_inicio, registrar_resumen,
-    nombre_mes, crear_directorio_salida
+    nombre_mes, crear_directorio_salida, leer_override_env
 )
 from utils.drive_utils import inicializar_drive, obtener_archivos, descargar_archivo
 from utils.excel_utils import normalizar_texto
@@ -36,8 +36,11 @@ from utils.gmail_utils import enviar_email_html_con_adjuntos, generar_html_resum
 # Configuracion
 # ---------------------------------------------------------------------------
 
-_anio_override = os.getenv("ANIO_OVERRIDE", "").strip()
-ANIO_ACTUAL = int(_anio_override)
+# Permite override manual vía workflow_dispatch (input "anio"). Si se deja
+# vacío, se usa el año actual automáticamente (antes esto crasheaba con
+# ValueError: invalid literal for int() with base 10: '').
+_anio_override = leer_override_env("ANIO_OVERRIDE")
+ANIO_ACTUAL = int(_anio_override) if _anio_override else datetime.now().year
 
 MESES = ["01", "02", "03", "04", "05", "06", "1° sac", "07", "08", "09", "10", "11","2° sac", "12"]
 
