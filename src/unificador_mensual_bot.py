@@ -30,8 +30,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Luego el resto de imports
 from utils.common_utils import (
     registrar_inicio, registrar_resumen, 
-    nombre_mes, obtener_mes_anterior, obtener_anio, crear_directorio_salida,
-    leer_override_env
+    nombre_mes, obtener_mes_anterior, obtener_anio, crear_directorio_salida
 )
 from utils.drive_utils import (
     inicializar_drive, obtener_archivos, descargar_archivo,
@@ -46,8 +45,8 @@ from utils.gmail_utils import (
 # Configuración
 # Permite override manual vía workflow_dispatch inputs (MES_OVERRIDE y ANIO_OVERRIDE) por formulario UI.
 # Cuando corre por schedule, las variables llegan vacías y se usa la lógica automática.
-_mes_override = leer_override_env("MES_OVERRIDE")
-_anio_override = leer_override_env("ANIO_OVERRIDE")
+_mes_override = os.getenv("MES_OVERRIDE", "").strip()
+_anio_override = os.getenv("ANIO_OVERRIDE", "").strip()
 
 MES_ACTUAL = _mes_override if _mes_override else obtener_mes_anterior()  # Mes que estamos procesando
 
@@ -55,10 +54,7 @@ MES_ACTUAL = _mes_override if _mes_override else obtener_mes_anterior()  # Mes q
 def obtener_nombre_csv():
     """Obtiene el nombre del archivo CSV basado en el mes y año actual"""
     mes_actual_formateado = MES_ACTUAL
-    # Antes: ignoraba _anio_override acá, aunque sí lo respetaba más abajo
-    # (línea ~1065) al calcular los datos. Eso podía generar un CSV con un
-    # año en el nombre distinto al año realmente procesado.
-    anio_actual = obtener_anio(mes_actual_formateado, anio_override=_anio_override)
+    anio_actual = obtener_anio(mes_actual_formateado)
     nombre_mes_actual = nombre_mes(mes_actual_formateado)
     
     # Formato: Unificado_MesAño.csv (ej: Unificado_Noviembre2025.csv)
@@ -299,7 +295,7 @@ def extraer_datos_excel(fh, nombre_archivo, hoja_mes):
                 print(f"     Col 25 (Código): '{primera_fila[24]}'")
             
             # Mostrar ejemplo de conversión
-            if len(primera_fila) > 3 and "á" in primera_fila[3] or "é" in primera_fila[3] or "í" in primera_fila[3] or "ó" in primera_fila[3] or "ú" in primera_fila[3]:
+            if len(primera_fila) > 3 and any(c in primera_fila[3] for c in ("á", "é", "í", "ó", "ú")):
                 print(f"     ✅ Ejemplo de conversión de tildes aplicado correctamente")
         
         return datos_extraidos
@@ -706,7 +702,7 @@ def calcular_sumatorias_datos(datos_excel):
     
     return sumatorias
 
-def extraer_y_preparar_datos_mes_periodo(drive, archivos_excel, periodo):
+def extraer_y_preparar_datos_mes_periodo(drive, archivos_excel, periodo, anio_actual=None):
     """
     Versión modificada que verifica consistencia
     AHORA INCLUYE CÓDIGO EN LOS DATOS EXTRAÍDOS Y REPORTE DE APORTANTES.
@@ -957,7 +953,7 @@ def extraer_y_preparar_datos_mes_periodo(drive, archivos_excel, periodo):
         
         # Guardar archivo CSV
         mes_formateado = nombre_mes(periodo)
-        anio_calculado = obtener_anio(periodo, anio_override=_anio_override)
+        anio_calculado = anio_actual if anio_actual is not None else obtener_anio(periodo)
         nombre_reporte = f"Aportantes_{mes_formateado}{anio_calculado}.csv"
         carpeta = crear_directorio_salida()
         ruta_reporte = os.path.join(carpeta, nombre_reporte)
@@ -971,8 +967,8 @@ def extraer_y_preparar_datos_mes_periodo(drive, archivos_excel, periodo):
             # Fila de totales al pie
             suma_reparticiones = sum(cantidad for _, _, cantidad in datos_reporte_aportantes)
             f.write(f"|||\n")
-            f.write(f"TOTAL|Total aportantes|{suma_reparticiones}\n")
-            f.write(f"TOTAL|Total aportantes unicos|{total_dnis_unicos_periodo}\n")
+            f.write(f"|Total aportantes:|{suma_reparticiones}\n")
+            f.write(f"|Total aportantes unicos:|{total_dnis_unicos_periodo}\n")
         
         print(f"\n✅ Reporte de aportantes guardado: {nombre_reporte}")
         print(f"   Total reparticiones: {len(datos_reporte_aportantes)}")
@@ -1050,16 +1046,13 @@ def combinar_con_existente(csv_existente, datos_nuevos):
     return encabezados, datos_combinados
 
 def determina_mes_a_procesar(mes_actual):
-    # Nota: se usa '°' (grado, U+00B0) para "1° sac"/"2° sac" en todo el
-    # proyecto (ver HOJAS_ORDEN en monitoreo_utils.py y MESES en
-    # reporte_anual_bot.py). nombre_mes()/obtener_anio() ahora normalizan
-    # 'º'→'°' de todas formas, pero se corrige acá también por prolijidad.
+    
     if mes_actual == "12":
-        return ["12", "2° sac"]
-
+        return ["12", "2º sac"]
+    
     if mes_actual == "06":
-        return ["06", "1° sac"]
-
+        return ["06", "1º sac"]
+    
     else:
         return [mes_actual]
 
@@ -1069,7 +1062,7 @@ def ejecutar_principal():
     
     inicio = time.time()
     mes_actual = MES_ACTUAL
-    anio_actual = obtener_anio(mes_actual, anio_override=_anio_override)
+    anio_actual = int(_anio_override) if _anio_override else obtener_anio(mes_actual)
     
     periodos = determina_mes_a_procesar(mes_actual)
    
@@ -1184,7 +1177,7 @@ def ejecutar_principal():
 
         # 4. Extraer datos de este período específico con sumatorias directas (AHORA 9 VALORES)
         datos_periodo, archivos_procesados, filas_periodo, errores, sumatorias_por_tipo, sumatorias_directas, aportantes_periodo, ruta_reporte_periodo, dnis_unicos_periodo = extraer_y_preparar_datos_mes_periodo(
-            drive, archivos_excel, periodo
+            drive, archivos_excel, periodo, anio_actual
         )
         
         # Guardar las sumatorias

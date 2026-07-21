@@ -34,6 +34,7 @@ ANIO_ACTUAL = obtener_anio(MES_ACTUAL)
 
 COLUMNAS_REVISION = [52, 53, 54]  # AZ, BA, BB
 FILA_INICIO = 4
+FILA_INICIO_CAJA = 5  # Archivos "Caja": misma lógica que unificador_mensual_bot.py / reporte_anual_bot.py / monitoreo_bot.py
 MAXIMO_HILOS = 5
 
 # Columnas a extraer para el CSV
@@ -78,6 +79,12 @@ def buscar_en_hoja(fh, nombre, hoja, todas_las_filas):
     (tanto positivos como negativos)
     Acumula los datos extraídos en la lista 'todas_las_filas' que se pasa por referencia
     
+    NOTA: Para archivos de "Caja" empieza desde fila 5 en vez de 4, igual que
+    unificador_mensual_bot.py / reporte_anual_bot.py / monitoreo_bot.py. Los
+    archivos Caja tienen una fila de subencabezado extra que corre TODAS las
+    columnas de datos una fila hacia abajo (no solo A-X) — si no se corrige acá
+    también, se desalinea la lectura de AZ/BA/BB para esas reparticiones.
+
     Args:
         fh: File handle del archivo Excel
         nombre: Nombre del archivo
@@ -99,10 +106,17 @@ def buscar_en_hoja(fh, nombre, hoja, todas_las_filas):
         ws = wb[hoja]
         filas_encontradas_en_archivo = 0
 
-        # DEBUG: Muestra primeras filas para verificar
-        print(f"   🔍 Buscando en hoja '{hoja}' desde fila {FILA_INICIO}")
+        # Archivos "Caja" tienen una fila de subencabezado extra: arrancar en fila 5
+        es_caja = "caja" in nombre.lower()
+        fila_inicio = FILA_INICIO_CAJA if es_caja else FILA_INICIO
 
-        for row_idx, row in enumerate(ws.iter_rows(min_row=FILA_INICIO, values_only=True), start=FILA_INICIO):
+        # DEBUG: Muestra primeras filas para verificar
+        if es_caja:
+            print(f"   ⚙ Archivo 'Caja' detectado. Buscando en hoja '{hoja}' desde fila {fila_inicio}")
+        else:
+            print(f"   🔍 Buscando en hoja '{hoja}' desde fila {fila_inicio}")
+
+        for row_idx, row in enumerate(ws.iter_rows(min_row=fila_inicio, values_only=True), start=fila_inicio):
             if row is None:
                 break
 

@@ -1,0 +1,55 @@
+name: Limpiar runs de Actions
+
+# Borra mensualmente los runs de TODOS los workflows del repo (todos los
+# bots), respetando una ventana mínima para no pisar artifacts que todavía
+# están dentro de su retention-days (el más largo hoy es reporte_anual: 60
+# días). Si un run se borra, el artifact que subió se borra con él, sin
+# importar el retention-days configurado en el upload-artifact.
+
+on:
+  workflow_dispatch:      # Para probarlo a mano antes de confiar en el cron
+  schedule:
+    - cron: "0 06 1 * *"  # Día 1 de cada mes, 06 UTC (3am Argentina)
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  limpiar-runs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Borrar runs antiguos de todos los workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          OWNER="${{ github.repository_owner }}"
+          REPO="${{ github.event.repository.name }}"
+          CURRENT_RUN_ID="${{ github.run_id }}"
+
+          # No tocar runs más nuevos que esto, para no borrar artifacts
+          # todavía vigentes. Ajustar si algún bot sube artifacts con
+          # retention-days mayor a 60.
+          DIAS_A_CONSERVAR=61
+          FECHA_LIMITE=$(date -u -d "-${DIAS_A_CONSERVAR} days" +%Y-%m-%dT%H:%M:%SZ)
+
+          echo "Borrando runs anteriores a $FECHA_LIMITE"
+          echo "(se excluye el run actual: $CURRENT_RUN_ID, y los que estén en curso)"
+
+          while true; do
+            RUNS=$(gh run list -R "$OWNER/$REPO" --limit 100 \
+              --json databaseId,createdAt,status \
+              --jq ".[] | select(.databaseId != $CURRENT_RUN_ID and .status != \"in_progress\" and .status != \"queued\" and .createdAt < \"$FECHA_LIMITE\") | .databaseId")
+
+            if [[ -z "$RUNS" ]]; then
+              echo "No hay más runs para borrar."
+              break
+            fi
+
+            echo "$RUNS" | while read -r RUN_ID; do
+              echo "Borrando run ID $RUN_ID..."
+              gh run delete "$RUN_ID" -R "$OWNER/$REPO"
+            done
+          done
+
+          echo "🧹 Limpieza completa."
