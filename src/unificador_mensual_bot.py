@@ -41,6 +41,7 @@ from utils.gmail_utils import (
     enviar_email_html_con_adjuntos, 
     generar_html_resumen_unificador
 )
+from utils.config_drive import FOLDER_REPARTICIONES_ID
 
 # Configuración
 # Permite override manual vía workflow_dispatch inputs (MES_OVERRIDE y ANIO_OVERRIDE) por formulario UI.
@@ -1076,7 +1077,7 @@ def ejecutar_principal():
     
     # 2. Obtener archivos Excel
     print("📁 Buscando archivos Excel en Drive...")
-    archivos = obtener_archivos(drive)
+    archivos = obtener_archivos(drive, FOLDER_REPARTICIONES_ID)
     
     # Filtrar solo Excel
     archivos_excel = []

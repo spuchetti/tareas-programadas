@@ -5,20 +5,27 @@ name: Ejecutar bot snapshot-builder
 # el único que necesita CREAR archivos nuevos en Drive: los snapshots
 # iniciales de reparticiones nuevas y, cuando hace falta, nuevas planillas
 # _registro_agentes_N (ver utils/registro_utils.py -> verificar_y_ampliar_capacidad).
-# Se ejecuta solo manualmente, cuando se sabe que hay reparticiones nuevas
-# para dar de alta — no tiene trigger automático.
+#
+# Se puede disparar de dos formas:
+#   - workflow_dispatch: manual, suelto, como siempre.
+#   - workflow_call: como job previo desde otro workflow (ver monitoreo.yml,
+#     que lo llama antes de correr monitoreo_bot.py para que las
+#     reparticiones nuevas tengan snapshot inicial sin depender de acordarse
+#     de correrlo a mano). Los snapshots que ya existen se saltean solos
+#     (ver snapshot_bot.py), así que llamarlo seguido no reprocesa nada de más.
 
 on:
-  workflow_dispatch:   # Solo manual
+  workflow_dispatch:   # Manual, suelto
+  workflow_call:        # Invocable como job previo desde otros workflows
 
 jobs:
   run-task:
-    runs-on: ubuntu-latest
-    timeout-minutes: 360   # 6 horas de margen
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180   # 2:20 horas de margen
 
     env:
-      OAUTH_REFRESH_TOKEN:  ${{ secrets.OAUTH_REFRESH_TOKEN }}  # ⬅️ NUEVO (reemplaza a GDRIVE_JSON)
-      # GDRIVE_JSON ya no se usa
+      OAUTH_REFRESH_TOKEN:  ${{ secrets.OAUTH_REFRESH_TOKEN }}
+      GDRIVE_JSON:          ${{ secrets.GDRIVE_JSON }}
       SMTP_TO_UNIFICADOR:   ${{ secrets.SMTP_TO_UNIFICADOR }}
       SMTP_FROM:            ${{ secrets.SMTP_FROM }}
       SMTP_PASSWORD:        ${{ secrets.SMTP_PASSWORD }}

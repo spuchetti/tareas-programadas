@@ -1,15 +1,18 @@
 name: Limpiar runs de Actions
 
-# Borra mensualmente los runs de TODOS los workflows del repo (todos los
-# bots), respetando una ventana mínima para no pisar artifacts que todavía
-# están dentro de su retention-days (el más largo hoy es reporte_anual: 60
-# días). Si un run se borra, el artifact que subió se borra con él, sin
-# importar el retention-days configurado en el upload-artifact.
+# Borra TODOS los runs de TODOS los workflows del repo (todos los bots),
+# sin respetar ninguna ventana de retención. Si un run se borra, el
+# artifact que subió se borra con él, sin importar el retention-days
+# configurado en el upload-artifact.
+#
+# Se excluyen únicamente:
+#   - el run actual (el que está ejecutando esta limpieza)
+#   - runs que estén "in_progress" o "queued" (en curso)
 
 on:
-  workflow_dispatch:      # Para probarlo a mano antes de confiar en el cron
+  workflow_dispatch:      # Para probarlo o dispararlo a mano cuando quieras
   schedule:
-    - cron: "0 06 1 * *"  # Día 1 de cada mes, 06 UTC (3am Argentina)
+    - cron: "0 01 1 * *"  # Día 1 de cada mes, 06 UTC (3am Argentina)
 
 permissions:
   actions: write
@@ -17,9 +20,9 @@ permissions:
 
 jobs:
   limpiar-runs:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
-      - name: Borrar runs antiguos de todos los workflows
+      - name: Borrar todos los runs de todos los workflows
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -27,19 +30,13 @@ jobs:
           REPO="${{ github.event.repository.name }}"
           CURRENT_RUN_ID="${{ github.run_id }}"
 
-          # No tocar runs más nuevos que esto, para no borrar artifacts
-          # todavía vigentes. Ajustar si algún bot sube artifacts con
-          # retention-days mayor a 60.
-          DIAS_A_CONSERVAR=61
-          FECHA_LIMITE=$(date -u -d "-${DIAS_A_CONSERVAR} days" +%Y-%m-%dT%H:%M:%SZ)
-
-          echo "Borrando runs anteriores a $FECHA_LIMITE"
+          echo "Borrando todos los runs del repo (sin ventana de retención)."
           echo "(se excluye el run actual: $CURRENT_RUN_ID, y los que estén en curso)"
 
           while true; do
             RUNS=$(gh run list -R "$OWNER/$REPO" --limit 100 \
-              --json databaseId,createdAt,status \
-              --jq ".[] | select(.databaseId != $CURRENT_RUN_ID and .status != \"in_progress\" and .status != \"queued\" and .createdAt < \"$FECHA_LIMITE\") | .databaseId")
+              --json databaseId,status \
+              --jq ".[] | select(.databaseId != $CURRENT_RUN_ID and .status != \"in_progress\" and .status != \"queued\") | .databaseId")
 
             if [[ -z "$RUNS" ]]; then
               echo "No hay más runs para borrar."

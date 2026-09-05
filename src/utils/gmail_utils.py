@@ -6,6 +6,7 @@ import os
 import smtplib
 import ssl
 import csv
+import re
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
@@ -13,111 +14,236 @@ from email import encoders
 from utils.common_utils import nombre_mes
 
 
-def enviar_email_html_con_adjuntos(asunto, html, lista_adjuntos=None, env_destinatario="SMTP_TO"):
+# =============================================================================
+# GENERADORES DE HTML - NUEVO ESTILO (monitoreo_bot)
+# =============================================================================
+
+def _nombre_archivo_sin_anio(nombre_archivo):
     """
-    Envía email usando SMTP con App Password de Gmail
-    Ahora acepta múltiples destinatarios separados por comas
+    '015-Ministerio de Salud-2026.xlsx' -> '015 - Ministerio de Salud'
+    Saca la extensión y el año final (si lo tiene), y separa el resto con ' - '.
+
+    Además del caso simple ('...-2026.xlsx'), contempla nombres con sufijo
+    de copia de Google Drive ('...-2026 (1).xlsx', '...-2026 (2).xlsx'),
+    que antes hacían que la regex no matcheara (por no estar el año pegado
+    al final del string) y el año se colaba en el subtítulo del mail.
+    """
+    sin_ext = re.sub(r"\.(xlsx|xlsm|xls)$", "", nombre_archivo.strip(), flags=re.IGNORECASE)
+    sin_anio = re.sub(r"[\s\-]*(19|20)\d{2}(\s*\(\d+\))?\s*$", "", sin_ext).strip()
+    return sin_anio.replace("-", " - ")
+
+
+def generar_html_resumen_monitoreo(
+    reparticion,
+    nombre_archivo,
+    total_cambios,
+    total_eliminados,
+    total_nuevos,
+    total_modificados,
+    cambios_por_periodo,
+    adjuntos_info,
+    fecha
+):
+    """
+    Genera HTML con el mismo estilo que el Apps Script de monitoreo.
     
     Args:
-        asunto: Asunto del email
-        html: Contenido HTML del email
-        lista_adjuntos: Lista de rutas de archivos a adjuntar
-        env_destinatario: Nombre de la variable de entorno para destinatarios
+        reparticion: Nombre de la repartición
+        nombre_archivo: Nombre del archivo procesado
+        total_cambios: Total de cambios
+        total_eliminados: Total de eliminados
+        total_nuevos: Total de nuevos
+        total_modificados: Total de modificados
+        cambios_por_periodo: Lista de dicts con cambios por período
+            Cada dict: {periodo, eliminados, nuevos, modificados, complementarias}
+        adjuntos_info: Lista de dicts con info de adjuntos
+            Cada dict: {es_xlsx, nombre, descripcion}
+        fecha: Fecha de generación
+    """
+    
+    # ── FILAS DE PERÍODOS ──────────────────────────────────────────────────────
+    filas_periodos = ""
+    for p in cambios_por_periodo:
+        badges = ""
+        if p.get("eliminados", 0) > 0:
+            badges += f'<span style="font-size:11px;font-weight:500;padding:3px 10px;border-radius:4px;white-space:nowrap;background:#fff1f2;color:#9f1239;border:0.5px solid #fecdd3;margin-left:6px;">{p["eliminados"]} eliminado{"s" if p["eliminados"] != 1 else ""}</span>'
+        if p.get("nuevos", 0) > 0:
+            badges += f'<span style="font-size:11px;font-weight:500;padding:3px 10px;border-radius:4px;white-space:nowrap;background:#f0fdf4;color:#14532d;border:0.5px solid #bbf7d0;margin-left:6px;">{p["nuevos"]} nuevo{"s" if p["nuevos"] != 1 else ""}</span>'
+        if p.get("modificados", 0) > 0:
+            badges += f'<span style="font-size:11px;font-weight:500;padding:3px 10px;border-radius:4px;white-space:nowrap;background:#eff6ff;color:#1e3a8a;border:0.5px solid #bfdbfe;margin-left:6px;">{p["modificados"]} modificado{"s" if p["modificados"] != 1 else ""}</span>'
+        if p.get("complementarias", False):
+            badges += f'<span style="font-size:11px;font-weight:500;padding:3px 10px;border-radius:4px;white-space:nowrap;background:#f5f3ff;color:#4c1d95;border:0.5px solid #ddd6fe;margin-left:6px;">con complementarias</span>'
+        
+        filas_periodos += f"""
+        <tr>
+            <td style="padding:12px 0;border-bottom:0.5px solid #e5e7eb;font-size:14px;font-weight:500;color:#111827;vertical-align:middle;">{p["periodo"]}</td>
+            <td style="padding:12px 0;border-bottom:0.5px solid #e5e7eb;text-align:right;vertical-align:middle;">{badges}</td>
+        </tr>"""
+    
+    # ── FILAS DE ADJUNTOS ──────────────────────────────────────────────────────
+    filas_adjuntos = ""
+    for adj in adjuntos_info:
+        icono = "XLSX" if adj.get("es_xlsx", False) else "CSV"
+        bg_icono = "#dcfce7" if adj.get("es_xlsx", False) else "#dbeafe"
+        color_icono = "#14532d" if adj.get("es_xlsx", False) else "#1e3a8a"
+        filas_adjuntos += f"""
+        <tr>
+            <td style="width:36px;padding:6px 10px 6px 0;vertical-align:middle;">
+                <div style="width:32px;height:32px;border-radius:6px;background:{bg_icono};color:{color_icono};font-size:11px;font-weight:600;text-align:center;line-height:32px;">{icono}</div>
+            </td>
+            <td style="padding:6px 0;vertical-align:middle;">
+                <div style="font-size:13px;font-weight:500;color:#111827;">{adj["nombre"]}</div>
+                <div style="font-size:11px;color:#9ca3af;margin-top:2px;">{adj["descripcion"]}</div>
+            </td>
+        </tr>"""
+    
+    seccion_adjuntos = ""
+    if adjuntos_info:
+        seccion_adjuntos = f"""
+        <div style="background:#f8fafc;border:0.5px solid #e5e7eb;border-radius:8px;padding:16px;margin-top:24px;">
+            <div style="font-size:11px;font-weight:500;letter-spacing:.06em;text-transform:uppercase;color:#9ca3af;margin-bottom:12px;">Archivos adjuntos</div>
+            <table style="width:100%;border-collapse:collapse;">{filas_adjuntos}</table>
+        </div>"""
+    
+    # ── HTML COMPLETO ──────────────────────────────────────────────────────────
+    html = f"""
+<div style="font-family:'Segoe UI',Arial,sans-serif;font-size:14px;color:#111827;max-width:640px;">
+
+    <!-- HEADER -->
+    <div style="background:#0d2a5e;border-radius:12px 12px 0 0;padding:28px 32px 24px;border-bottom:3px solid #1a4fa0;">
+        <div style="font-size:11px;font-weight:500;letter-spacing:.1em;color:#5b8ad4;text-transform:uppercase;margin-bottom:10px;">
+            <span style="color:#3aaa35;">●</span> Monitoreo de liquidaciones
+        </div>
+        <div style="font-size:21px;font-weight:500;color:#f0f6ff;line-height:1.3;margin-bottom:4px;">
+            Cambios detectados - {reparticion}
+        </div>
+        <div style="font-size:13px;color:#5b8ad4;">{_nombre_archivo_sin_anio(nombre_archivo)}</div>
+    </div>
+
+    <!-- STRIP MÉTRICAS -->
+    <table style="width:100%;border-collapse:collapse;background:#102d6b;border-bottom:1px solid #163580;">
+        <tr>
+            <td style="padding:14px 20px;text-align:center;border-right:0.5px solid #1a3d7a;">
+                <div style="font-size:10px;letter-spacing:.08em;color:#5b8ad4;text-transform:uppercase;margin-bottom:3px;">Total cambios</div>
+                <div style="font-size:22px;font-weight:500;color:#f0f6ff;">{total_cambios}</div>
+            </td>
+            <td style="padding:14px 20px;text-align:center;border-right:0.5px solid #1a3d7a;">
+                <div style="font-size:10px;letter-spacing:.08em;color:#5b8ad4;text-transform:uppercase;margin-bottom:3px;">Eliminados</div>
+                <div style="font-size:22px;font-weight:500;color:#f87171;">{total_eliminados}</div>
+            </td>
+            <td style="padding:14px 20px;text-align:center;border-right:0.5px solid #1a3d7a;">
+                <div style="font-size:10px;letter-spacing:.08em;color:#5b8ad4;text-transform:uppercase;margin-bottom:3px;">Nuevos</div>
+                <div style="font-size:22px;font-weight:500;color:#4ade80;">{total_nuevos}</div>
+            </td>
+            <td style="padding:14px 20px;text-align:center;">
+                <div style="font-size:10px;letter-spacing:.08em;color:#5b8ad4;text-transform:uppercase;margin-bottom:3px;">Modificados</div>
+                <div style="font-size:22px;font-weight:500;color:#60a5fa;">{total_modificados}</div>
+            </td>
+        </tr>
+    </table>
+
+    <!-- BODY -->
+    <div style="background:#ffffff;border:0.5px solid #e5e7eb;border-top:none;padding:28px 32px;border-radius:0 0 12px 12px;">
+
+        <div style="font-size:11px;font-weight:500;letter-spacing:.08em;color:#9ca3af;text-transform:uppercase;margin-bottom:12px;">Detalle por periodo</div>
+
+        <table style="width:100%;border-collapse:collapse;">
+            <thead>
+                <tr>
+                    <th style="font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#9ca3af;padding:0 0 8px;text-align:left;border-bottom:0.5px solid #e5e7eb;font-weight:500;">Periodo</th>
+                    <th style="font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#9ca3af;padding:0 0 8px;text-align:right;border-bottom:0.5px solid #e5e7eb;font-weight:500;">Registros</th>
+                </tr>
+            </thead>
+            <tbody>{filas_periodos}</tbody>
+        </table>
+
+        {seccion_adjuntos}
+
+        <!-- FOOTER -->
+        <table style="width:100%;border-collapse:collapse;margin-top:24px;border-top:0.5px solid #e5e7eb;">
+            <tr>
+                <td style="padding-top:14px;font-size:11px;color:#9ca3af;">
+                    Generado automáticamente por <strong>APORTES</strong> · Monitoreo de Liquidaciones
+                </td>
+            </tr>
+        </table>
+
+    </div>
+
+</div>"""
+    
+    return html
+
+
+# =============================================================================
+# ENVÍO DE EMAILS
+# =============================================================================
+
+def enviar_email_html_con_adjuntos(asunto, html, lista_adjuntos=None, env_destinatario="SMTP_TO"):
+    """
+    Envía email usando SMTP con App Password de Gmail.
     """
     if lista_adjuntos is None:
         lista_adjuntos = []
     
-    # Obtiene las configuraciones desde variables de entorno
-    mail_to = os.getenv(env_destinatario)  # destinatario
+    mail_to = os.getenv(env_destinatario)
     mail_from = os.getenv("SMTP_FROM")
     smtp_password = os.getenv("SMTP_PASSWORD")
     
-    # Validar configuraciones
     if not mail_to:
         print(f"⚠️ {env_destinatario} no configurado. No se enviará email.")
         return
     
     if not mail_from:
-        print(f"⚠️ SMTP_FROM no configurado. Usando {env_destinatario} como remitente.")
         mail_from = mail_to
     
     if not smtp_password:
         print("❌ SMTP_PASSWORD no configurado. No se enviará email.")
-        print("💡 Verifica que hayas agregado SMTP_PASSWORD en GitHub Secrets")
         return
     
-    # Procesa múltiples destinatarios (separados por comas)
     destinatarios = [dest.strip() for dest in mail_to.split(',')]
     
     print(f"📧 Configurando email:")
-    print(f"   Variable usada: {env_destinatario}")
     print(f"   De: {mail_from}")
     print(f"   Para: {', '.join(destinatarios)}")
     print(f"   Adjuntos: {len(lista_adjuntos)} archivo(s)")
 
     try:
-        # 1. Crear mensaje MIME
         msg = MIMEMultipart()
         msg["From"] = mail_from
-        msg["To"] = mail_to  # Mantener formato original para el header
+        msg["To"] = mail_to
         msg["Subject"] = asunto
-
-        # 2. Agregar cuerpo HTML
         msg.attach(MIMEText(html, "html", "utf-8"))
 
-        # 3. Agregar archivos adjuntos
         for ruta_adjunto in lista_adjuntos:
             if os.path.exists(ruta_adjunto):
                 nombre_archivo = os.path.basename(ruta_adjunto)
                 print(f"   📎 Adjuntando: {nombre_archivo}")
-                
                 with open(ruta_adjunto, "rb") as archivo:
                     part = MIMEBase("application", "octet-stream")
                     part.set_payload(archivo.read())
                     encoders.encode_base64(part)
-                    part.add_header(
-                        "Content-Disposition",
-                        f'attachment; filename="{nombre_archivo}"'
-                    )
+                    part.add_header("Content-Disposition", f'attachment; filename="{nombre_archivo}"')
                     msg.attach(part)
             else:
                 print(f"   ⚠ Archivo no encontrado: {ruta_adjunto}")
 
-        # 4. Configurar contexto SSL
         contexto = ssl.create_default_context()
-
-        # 5. Conectar y enviar vía SMTP
-        print("🔗 Conectando a SMTP Gmail (smtp.gmail.com:465)...")
-        
+        print("🔗 Conectando a SMTP Gmail...")
         with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=contexto) as servidor:
-            # Autenticar con App Password
-            print("🔑 Autenticando con App Password...")
             servidor.login(mail_from, smtp_password)
-            
-            # Enviar email a todos los destinatarios
-            print("📤 Enviando mensaje...")
             servidor.send_message(msg, from_addr=mail_from, to_addrs=destinatarios)
-        
-        print("✅ Email enviado exitosamente vía SMTP")
-        print(f"   Asunto: {asunto}")
-        for destinatario in destinatarios:
-            print(f"   Destinatario: {destinatario}")
+        print("✅ Email enviado exitosamente")
 
-    except smtplib.SMTPAuthenticationError as auth_error:
-        print("❌ ERROR DE AUTENTICACIÓN SMTP")
-        print(f"   Código: {auth_error.smtp_code}")
-        print(f"   Mensaje: {auth_error.smtp_error}")
-        print("\n💡 SOLUCIÓN:")
-        print("   1. Verifica que SMTP_PASSWORD sea el App Password de 16 caracteres")
-        print("   2. NO uses tu contraseña normal de Gmail")
-        print("   3. El App Password debe verse así: 'abcd efgh ijkl mnop'")
-        print("   4. Asegúrate de que la verificación en 2 pasos esté ACTIVADA")
-        
     except Exception as e:
-        print(f"❌ Error enviando email SMTP: {type(e).__name__}: {e}")
+        print(f"❌ Error enviando email: {e}")
         import traceback
         traceback.print_exc()
 
+
+# =============================================================================
+# FUNCIONES LEGACY (mantenidas para compatibilidad con otros bots)
+# =============================================================================
 
 def generar_html_resumen_fv(periodo, procesados, reparticiones_detectadas, total_agentes, lista, fecha):
     """
@@ -991,155 +1117,6 @@ def generar_html_resumen_anual(anio, archivos_procesados, resumen_por_mes, fecha
     <p style="font-size:13px; color:#555;">
         📎 El Excel adjunto contiene el detalle completo con una hoja por mes.
     </p>
-
-    <hr style="margin:18px 0; border:none; border-top:1px solid #e5e7eb;">
-
-    <p style="font-size:0.85em; color:#888;">Generado: {fecha}</p>
-
-    <div style="text-align:right; margin-top:20px;">
-        <img
-            src="https://raw.githubusercontent.com/spuchetti/tareas-programadas/main/assets/robot.jpg"
-            width="140"
-            style="opacity:0.55;"
-        />
-    </div>
-
-</body>
-</html>"""
-
-    return html
-
-
-def generar_html_resumen_monitoreo(reparticion, nombre_archivo, total_cambios,
-                                    total_eliminados, total_nuevos, total_modificados,
-                                    cambios_por_periodo, adjuntos_info, fecha):
-    """
-    Genera el HTML del mail de monitoreo de liquidaciones para UNA repartición.
-
-    Args:
-        reparticion: Nombre legible de la repartición (str)
-        nombre_archivo: Nombre del archivo de Drive procesado (str)
-        total_cambios: Cantidad total de cambios detectados, todos los períodos (int)
-        total_eliminados / total_nuevos / total_modificados: totales por tipo (int)
-        cambios_por_periodo: list de dicts
-            {"periodo": str, "eliminados": int, "nuevos": int,
-             "modificados": int, "complementarias": bool}
-        adjuntos_info: list de dicts {"es_xlsx": bool, "nombre": str, "descripcion": str}
-        fecha: Fecha de generación (str)
-    """
-    filas_periodos = ""
-    for p in cambios_por_periodo:
-        badge_comp = (
-            '<span style="background:#f59e0b;color:white;padding:2px 8px;'
-            'border-radius:10px;font-size:11px;font-weight:700;margin-left:6px;">'
-            'COMPLEMENTARIA</span>'
-        ) if p.get("complementarias") else ""
-
-        filas_periodos += f"""
-                <tr style="border-bottom:1px solid #e5e7eb;">
-                    <td style="padding:9px 14px; font-size:13px; font-weight:600; color:#374151;">
-                        {p['periodo']}{badge_comp}
-                    </td>
-                    <td style="padding:9px 14px; font-size:13px; text-align:center; color:#dc2626;">{p['eliminados']}</td>
-                    <td style="padding:9px 14px; font-size:13px; text-align:center; color:#16a085;">{p['nuevos']}</td>
-                    <td style="padding:9px 14px; font-size:13px; text-align:center; color:#0a7bdc;">{p['modificados']}</td>
-                </tr>"""
-
-    filas_adjuntos = ""
-    for a in adjuntos_info:
-        icono = "📗" if a.get("es_xlsx") else "📄"
-        filas_adjuntos += f"""
-                <tr style="border-bottom:1px solid #e5e7eb;">
-                    <td style="padding:8px 14px; font-size:13px;">{icono} {a['nombre']}</td>
-                    <td style="padding:8px 14px; font-size:12px; color:#6b7280;">{a['descripcion']}</td>
-                </tr>"""
-
-    html = f"""<!DOCTYPE html>
-<html lang="es">
-<head>
-    <meta charset="utf-8">
-    <title>Monitoreo de Liquidaciones - {reparticion}</title>
-    <style>
-        body {{
-            font-family: Arial, Helvetica, sans-serif;
-            color: #222;
-            line-height: 1.4;
-            padding: 18px;
-        }}
-    </style>
-</head>
-
-<body>
-
-    <!-- CABECERA -->
-    <div style="
-        background: linear-gradient(90deg,#0a7bdc,#16a085);
-        padding: 18px;
-        border-radius: 8px;
-        color: white;
-        margin-bottom: 22px;
-    ">
-        <h2 style="margin:0;">🔄🔵🟢 OSER - MONITOREO DE LIQUIDACIONES</h2>
-        <div style="opacity:0.9; font-size:14px; margin-top:4px;">{reparticion}</div>
-        <div style="opacity:0.75; font-size:12px; margin-top:2px;">Archivo: {nombre_archivo}</div>
-    </div>
-
-    <!-- RESUMEN GENERAL -->
-    <table style="width:100%; border-collapse:collapse; margin-bottom:24px;">
-        <tr>
-            <td style="padding:10px 16px; background:#fef2f2; border-radius:6px; text-align:center; width:24%;">
-                <div style="font-size:11px; color:#6b7280; text-transform:uppercase; letter-spacing:.5px;">Eliminados</div>
-                <div style="font-size:26px; font-weight:700; color:#dc2626;">{total_eliminados}</div>
-            </td>
-            <td style="width:1%;"></td>
-            <td style="padding:10px 16px; background:#eef7f4; border-radius:6px; text-align:center; width:24%;">
-                <div style="font-size:11px; color:#6b7280; text-transform:uppercase; letter-spacing:.5px;">Nuevos</div>
-                <div style="font-size:26px; font-weight:700; color:#16a085;">{total_nuevos}</div>
-            </td>
-            <td style="width:1%;"></td>
-            <td style="padding:10px 16px; background:#eff6ff; border-radius:6px; text-align:center; width:24%;">
-                <div style="font-size:11px; color:#6b7280; text-transform:uppercase; letter-spacing:.5px;">Modificados</div>
-                <div style="font-size:26px; font-weight:700; color:#0a7bdc;">{total_modificados}</div>
-            </td>
-            <td style="width:1%;"></td>
-            <td style="padding:10px 16px; background:#f3f4f6; border-radius:6px; text-align:center; width:24%;">
-                <div style="font-size:11px; color:#6b7280; text-transform:uppercase; letter-spacing:.5px;">Total cambios</div>
-                <div style="font-size:26px; font-weight:700; color:#1f4e79;">{total_cambios}</div>
-            </td>
-        </tr>
-    </table>
-
-    <!-- TABLA POR PERIODO -->
-    <div style="border:1px solid #e5e7eb; border-radius:8px; overflow:hidden; margin-bottom:24px;">
-        <div style="background:#1f4e79; padding:12px 16px;">
-            <span style="font-size:15px; font-weight:700; color:white;">📆 Detalle por período</span>
-        </div>
-        <table style="width:100%; border-collapse:collapse;">
-            <thead>
-                <tr style="background:#f3f4f6;">
-                    <th style="padding:8px 14px; text-align:left;   font-size:12px; color:#374151; font-weight:600;">Período</th>
-                    <th style="padding:8px 14px; text-align:center; font-size:12px; color:#374151; font-weight:600;">Eliminados</th>
-                    <th style="padding:8px 14px; text-align:center; font-size:12px; color:#374151; font-weight:600;">Nuevos</th>
-                    <th style="padding:8px 14px; text-align:center; font-size:12px; color:#374151; font-weight:600;">Modificados</th>
-                </tr>
-            </thead>
-            <tbody>
-                {filas_periodos}
-            </tbody>
-        </table>
-    </div>
-
-    <!-- ARCHIVOS ADJUNTOS -->
-    <div style="border:1px solid #e5e7eb; border-radius:8px; overflow:hidden; margin-bottom:24px;">
-        <div style="background:#374151; padding:10px 16px;">
-            <span style="font-size:14px; font-weight:700; color:white;">📎 Archivos adjuntos</span>
-        </div>
-        <table style="width:100%; border-collapse:collapse;">
-            <tbody>
-                {filas_adjuntos}
-            </tbody>
-        </table>
-    </div>
 
     <hr style="margin:18px 0; border:none; border-top:1px solid #e5e7eb;">
 

@@ -26,6 +26,7 @@ from utils.common_utils import (
 )
 from utils.drive_utils import inicializar_drive, obtener_archivos, descargar_archivo
 from utils.gmail_utils import enviar_email_html_con_adjuntos, generar_html_resumen_fv
+from utils.config_drive import FOLDER_REPARTICIONES_ID
 
 
 # Configuración
@@ -297,7 +298,7 @@ def ejecutar_principal():
         return
 
     # 2. Obtiene archivos
-    archivos = obtener_archivos(drive)
+    archivos = obtener_archivos(drive, FOLDER_REPARTICIONES_ID)
     if not archivos:
         print("❌ No se encontraron archivos.")
         return
