@@ -12,9 +12,11 @@ O bien: python src/snapshot_bot.py
 
 import io
 import os
+import ssl
 import sys
 import time
 import traceback
+from http.client import IncompleteRead
 
 # Forzar flush de prints para ver logs en tiempo real en GitHub Actions
 sys.stdout.reconfigure(line_buffering=True)
@@ -28,9 +30,13 @@ from utils.common_utils import registrar_inicio, registrar_resumen
 from utils.auth_utils import (
     obtener_drive_service_oauth,
     obtener_sheets_service_oauth,
+    obtener_drive_service_sa,
+    obtener_sheets_service_sa,
     CredencialesFaltantesError,
 )
 from utils.registro_utils import verificar_y_ampliar_capacidad
+from utils.drive_utils import request_drive_con_reintentos
+from utils.config_drive import FOLDER_REPARTICIONES_ID, FOLDER_SERVICES_ID
 
 # ---------------------------------------------------------------------------
 # Configuración
@@ -42,11 +48,27 @@ from utils.registro_utils import verificar_y_ampliar_capacidad
 # hace falta, nuevas planillas de registro). Se ejecuta solo manualmente
 # (workflow_dispatch), cuando se sabe que hay reparticiones nuevas para
 # crear — no tiene trigger automático.
+#
+# FOLDER_REPARTICIONES_ID y FOLDER_SERVICES_ID viven en utils/config_drive.py
+# (única fuente de verdad, compartida con monitoreo_utils.py y
+# registro_utils.py). No redefinir acá.
 
-CARPETA_XLSX_ID    = "1mRkd5gCHe0dOL0WGNcyZ20V4uK_l9KVn" #"1_Xb2jrtr3Sjwi8-2nhT2k53KZ6CLE5hJ"   # Todas las reparticiones
-CARPETA_INTERNA_ID = "1XJj3pMySybGeK7cW5-PRFPf1q5w2Dch5"   # Carpeta interna OSER
 SNAP_FOLDER_NAME   = "_snapshots_liquidaciones"
 SNAP_PREFIX        = "[SNAP] "
+
+# Errores de red/transporte que NO llegan como HttpError porque la
+# conexión se corta antes de recibir una respuesta HTTP (ej. el socket se
+# cuelga esperando datos y el sistema operativo lo mata por timeout). Sin
+# esto, un TimeoutError como el que tiró abajo la corrida completa el
+# 27/07 se propagaba sin reintento y mataba todo el proceso, dejando sin
+# procesar el resto de las reparticiones pendientes.
+ERRORES_RED_REINTENTABLES = (
+    TimeoutError,       # incluye socket.timeout (alias desde Python 3.10)
+    ConnectionError,    # ConnectionReset/Aborted/Refused, BrokenPipe
+    ssl.SSLError,
+    IncompleteRead,
+    OSError,            # red de última instancia (ej. "Network is unreachable")
+)
 
 INTENTOS_MAX       = 3
 ESPERA_REINTENTO   = 6   # segundos entre reintentos de subida
@@ -86,14 +108,21 @@ def listar_archivos(drive, carpeta_id, solo_xlsx=True):
     archivos = []
     page_token = None
     while True:
-        res = drive.files().list(
-            q=q,
-            pageSize=200,
-            fields="nextPageToken, files(id, name, mimeType)",
-            supportsAllDrives=True,
-            includeItemsFromAllDrives=True,
-            pageToken=page_token,
-        ).execute()
+        res = request_drive_con_reintentos(
+            drive.files().list(
+                q=q,
+                pageSize=200,
+                fields="nextPageToken, files(id, name, mimeType)",
+                supportsAllDrives=True,
+                includeItemsFromAllDrives=True,
+                pageToken=page_token,
+            ).execute,
+            f"listar archivos en {carpeta_id} (paginación)",
+        )
+        if not res:
+            print("   ⚠️  Error listando archivos tras reintentos — se corta la paginación "
+                  "con lo obtenido hasta ahora", flush=True)
+            break
         archivos.extend(res.get("files", []))
         page_token = res.get("nextPageToken")
         if not page_token:
@@ -102,34 +131,52 @@ def listar_archivos(drive, carpeta_id, solo_xlsx=True):
 
 
 def obtener_o_crear_carpeta_snaps(drive):
-    """Busca la carpeta de snapshots dentro de CARPETA_INTERNA_ID. Si no existe, la crea."""
-    print(f"🔍 Buscando carpeta '{SNAP_FOLDER_NAME}' en {CARPETA_INTERNA_ID}...", flush=True)
-    res = drive.files().list(
-        q=(
-            f"'{CARPETA_INTERNA_ID}' in parents "
-            f"and name='{SNAP_FOLDER_NAME}' "
-            f"and mimeType='application/vnd.google-apps.folder' "
-            f"and trashed=false"
-        ),
-        fields="files(id)",
-        supportsAllDrives=True,
-        includeItemsFromAllDrives=True,
-    ).execute()
+    """
+    Busca la carpeta de snapshots dentro de FOLDER_SERVICES_ID. Si no existe, la crea.
+
+    Las dos llamadas a Drive pasan por request_drive_con_reintentos con
+    propagar_error=True: esto corre una sola vez al arrancar el bot y su
+    resultado (snap_folder_id) se usa durante toda la corrida. Si el
+    request de búsqueda fallara por un corte de red y se tratara como
+    "None -> no existe", terminaría CREANDO una carpeta duplicada en vez de
+    reusar la existente — peor que frenar con un error claro y reintentar
+    la corrida.
+    """
+    print(f"🔍 Buscando carpeta '{SNAP_FOLDER_NAME}' en {FOLDER_SERVICES_ID}...", flush=True)
+    res = request_drive_con_reintentos(
+        drive.files().list(
+            q=(
+                f"'{FOLDER_SERVICES_ID}' in parents "
+                f"and name='{SNAP_FOLDER_NAME}' "
+                f"and mimeType='application/vnd.google-apps.folder' "
+                f"and trashed=false"
+            ),
+            fields="files(id)",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
+        ).execute,
+        f"buscar carpeta '{SNAP_FOLDER_NAME}'",
+        propagar_error=True,
+    )
     archivos = res.get("files", [])
     if archivos:
         folder_id = archivos[0]["id"]
         print(f"📁 Carpeta snapshots encontrada: {folder_id}", flush=True)
         return folder_id
     print(f"📁 Carpeta '{SNAP_FOLDER_NAME}' no encontrada, creando...", flush=True)
-    nueva = drive.files().create(
-        body={
-            "name": SNAP_FOLDER_NAME,
-            "mimeType": "application/vnd.google-apps.folder",
-            "parents": [CARPETA_INTERNA_ID],
-        },
-        fields="id",
-        supportsAllDrives=True,
-    ).execute()
+    nueva = request_drive_con_reintentos(
+        drive.files().create(
+            body={
+                "name": SNAP_FOLDER_NAME,
+                "mimeType": "application/vnd.google-apps.folder",
+                "parents": [FOLDER_SERVICES_ID],
+            },
+            fields="id",
+            supportsAllDrives=True,
+        ).execute,
+        f"crear carpeta '{SNAP_FOLDER_NAME}'",
+        propagar_error=True,
+    )
     print(f"📁 Carpeta snapshots creada: {nueva['id']}", flush=True)
     return nueva["id"]
 
@@ -163,9 +210,37 @@ def descargar_bytes(drive, file_id, mime_type):
 
 
 def subir_como_gsheet(drive, fh, nombre_snap, snap_folder_id):
-    """Sube un archivo .xlsx como Google Sheets usando enfoque de dos pasos."""
+    """
+    Sube un archivo .xlsx como Google Sheets usando enfoque de dos pasos
+    (crear vacío + subir contenido).
+
+    Si un intento falla DESPUÉS de crear el archivo vacío (ej. timeout
+    subiendo el contenido), ese archivo queda huérfano en Drive: vacío o
+    con contenido parcial, con el mismo nombre que el SNAP final. El
+    siguiente intento crea uno nuevo en vez de reusar el huérfano (Drive
+    permite nombres duplicados), así que sin este cuidado terminan
+    quedando varias copias del mismo SNAP. Acá se registra el ID de cada
+    intento fallido y se lo borra apenas el intento final tiene éxito (o
+    al agotar los reintentos, para no dejar basura ni en el caso de
+    fallo total).
+    """
     fh.seek(0)
+    archivos_huerfanos = []
+
+    def _borrar_huerfanos():
+        for huerfano_id in archivos_huerfanos:
+            try:
+                request_drive_con_reintentos(
+                    drive.files().delete(fileId=huerfano_id, supportsAllDrives=True).execute,
+                    f"borrar archivo huérfano {huerfano_id}",
+                    propagar_error=True,
+                )
+                print(f"   🗑️  Archivo huérfano de un intento anterior borrado ({huerfano_id})", flush=True)
+            except Exception as e:
+                print(f"   ⚠️  No se pudo borrar archivo huérfano {huerfano_id}: {e}", flush=True)
+
     for intento in range(INTENTOS_MAX):
+        file_id = None
         try:
             file_metadata = {
                 "name": nombre_snap,
@@ -179,6 +254,7 @@ def subir_como_gsheet(drive, fh, nombre_snap, snap_folder_id):
                 supportsAllDrives=True
             ).execute()
             file_id = file.get("id")
+            archivos_huerfanos.append(file_id)  # huérfano hasta que se confirme el contenido
             print(f"   📄 Archivo creado (ID: {file_id})", flush=True)
             fh.seek(0)
             media = MediaIoBaseUpload(
@@ -194,6 +270,8 @@ def subir_como_gsheet(drive, fh, nombre_snap, snap_folder_id):
                 supportsAllDrives=True
             ).execute()
             print(f"   ✅ Contenido subido", flush=True)
+            archivos_huerfanos.remove(file_id)  # este es el definitivo, no un huérfano
+            _borrar_huerfanos()
             return updated_file.get("id")
         except HttpError as e:
             print(f"   ❌ Error {e.resp.status}: {e._get_reason()}", flush=True)
@@ -203,7 +281,17 @@ def subir_como_gsheet(drive, fh, nombre_snap, snap_folder_id):
                 time.sleep(espera)
             else:
                 print(f"   📝 Detalle: {e.content}", flush=True)
+                _borrar_huerfanos()
                 return None
+        except ERRORES_RED_REINTENTABLES as e:
+            # Ej: TimeoutError leyendo la respuesta del upload — no llega a
+            # ser un HttpError porque nunca hubo respuesta HTTP. Se trata
+            # igual que un error transitorio de servidor: reintentar.
+            espera = ESPERA_REINTENTO * (intento + 1)
+            print(f"   ❌ Error de red ({type(e).__name__}: {e})", flush=True)
+            print(f"   ⏳ Reintento {intento+1}/{INTENTOS_MAX} en {espera}s...", flush=True)
+            time.sleep(espera)
+    _borrar_huerfanos()
     return None
 
 
@@ -223,28 +311,49 @@ def ejecutar_principal():
         return
     print("✅ Drive inicializado correctamente", flush=True)
 
+    print(f"📂 Listando archivos en carpeta {FOLDER_REPARTICIONES_ID}...", flush=True)
+    archivos = listar_archivos(drive, FOLDER_REPARTICIONES_ID, solo_xlsx=True)
+    print(f"📊 Archivos .xlsx encontrados: {len(archivos)}", flush=True)
+
     # ── Ampliar capacidad del registro de agentes si hace falta ─────────────
-    # Único paso del proyecto que puede crear una planilla _registro_agentes_N
-    # nueva (bootstrap o por adelantado al acercarse a 150 hojas). El resto
+    # Único paso del proyecto que puede crear planillas _registro_agentes_N
+    # nuevas (bootstrap, o las que hagan falta). Se le pasa la cantidad total
+    # de reparticiones para que la capacidad libre resultante alcance para
+    # el peor caso de la corrida de monitoreo_bot que sigue (que TODAS
+    # necesiten hoja nueva), no solo para un colchón fijo — ver docstring de
+    # verificar_y_ampliar_capacidad() para el detalle de por qué. El resto
     # de los bots corre con Service Account y solo espera encontrar lugar.
+    #
+    # Se le pasan AMBOS pares de credenciales: la lectura de las planillas
+    # ya existentes (descubrirlas + contar hojas) se hace con la Service
+    # Account, que tiene acceso garantizado a todo lo ya existente; OAuth
+    # se usa solo para el acto de crear una planilla nueva si hace falta.
+    # Antes se usaba OAuth también para leer capacidad, y si OAuth no tenía
+    # acceso de Sheets a alguna planilla vieja, esa planilla se contaba
+    # como "sin lugar" y se terminaban creando duplicados de más.
     print("📋 Verificando capacidad del registro de agentes...", flush=True)
     try:
+        sheets_sa = obtener_sheets_service_sa()
+        drive_sa = obtener_drive_service_sa()
         sheets_oauth = obtener_sheets_service_oauth()
-        verificar_y_ampliar_capacidad(sheets_oauth, drive)
+        verificar_y_ampliar_capacidad(
+            sheets_sa, drive_sa, sheets_oauth, drive, cantidad_reparticiones=len(archivos)
+        )
     except Exception as e:
         print(f"⚠️  No se pudo verificar/ampliar la capacidad del registro: {e}", flush=True)
         traceback.print_exc()
 
     print("📁 Obteniendo carpeta de snapshots...", flush=True)
-    snap_folder_id = obtener_o_crear_carpeta_snaps(drive)
+    try:
+        snap_folder_id = obtener_o_crear_carpeta_snaps(drive)
+    except Exception as e:
+        print(f"❌ No se pudo obtener/crear la carpeta de snapshots (error de red persistente "
+              f"tras varios reintentos): {e}", flush=True)
+        return
     
     print("📋 Listando SNAPs existentes...", flush=True)
     snaps_existentes = listar_snaps_existentes(drive, snap_folder_id)
     print(f"✅ SNAPs existentes: {len(snaps_existentes)}", flush=True)
-    
-    print(f"📂 Listando archivos en carpeta {CARPETA_XLSX_ID}...", flush=True)
-    archivos = listar_archivos(drive, CARPETA_XLSX_ID, solo_xlsx=True)
-    print(f"📊 Archivos .xlsx encontrados: {len(archivos)}", flush=True)
     
     if MODO_PRUEBA and len(archivos) > MAX_ARCHIVOS_PRUEBA:
         archivos = archivos[:MAX_ARCHIVOS_PRUEBA]
@@ -260,33 +369,45 @@ def ejecutar_principal():
         nombre_base = archivo["name"].replace(".xlsx", "").replace(".XLSX", "")
         nombre_snap = f"{SNAP_PREFIX}{nombre_base}"
         print(f"[{i}/{len(archivos)}] {archivo['name']}", flush=True)
-        
-        if nombre_snap in snaps_existentes:
-            print(f"   ⏭️  SNAP ya existe, saltando.", flush=True)
-            saltados += 1
-            continue
-        
-        print(f"   ⬇️  Descargando...", flush=True)
-        fh = descargar_bytes(drive, archivo["id"], archivo["mimeType"])
-        if not fh:
-            print(f"   ❌ No se pudo descargar.", flush=True)
+
+        try:
+            if nombre_snap in snaps_existentes:
+                print(f"   ⏭️  SNAP ya existe, saltando.", flush=True)
+                saltados += 1
+                continue
+
+            print(f"   ⬇️  Descargando...", flush=True)
+            fh = descargar_bytes(drive, archivo["id"], archivo["mimeType"])
+            if not fh:
+                print(f"   ❌ No se pudo descargar.", flush=True)
+                errores += 1
+                lista_errores.append(archivo["name"])
+                continue
+            tamanio_kb = fh.getbuffer().nbytes / 1024
+            print(f"   ✅ Descargado ({tamanio_kb:.1f} KB)", flush=True)
+
+            print(f"   ⬆️  Subiendo como Google Sheets...", flush=True)
+            snap_id = subir_como_gsheet(drive, fh, nombre_snap, snap_folder_id)
+            if snap_id:
+                print(f"   ✅ SNAP creado ({snap_id})", flush=True)
+                snaps_existentes.add(nombre_snap)
+                procesados += 1
+            else:
+                print(f"   ❌ Falló la subida tras {INTENTOS_MAX} intentos.", flush=True)
+                errores += 1
+                lista_errores.append(archivo["name"])
+        except Exception as e:
+            # Cualquier error no previsto en ESTE archivo puntual (ej. un
+            # TimeoutError que agotó los INTENTOS_MAX reintentos, o algo
+            # totalmente nuevo) no debe tirar abajo el resto del batch.
+            # Antes esto no estaba protegido y un solo archivo con
+            # problemas de red mataba la corrida entera, dejando sin
+            # procesar todas las reparticiones restantes.
+            print(f"   ❌ Error inesperado procesando este archivo: {e}", flush=True)
+            traceback.print_exc()
             errores += 1
             lista_errores.append(archivo["name"])
-            continue
-        tamanio_kb = fh.getbuffer().nbytes / 1024
-        print(f"   ✅ Descargado ({tamanio_kb:.1f} KB)", flush=True)
-        
-        print(f"   ⬆️  Subiendo como Google Sheets...", flush=True)
-        snap_id = subir_como_gsheet(drive, fh, nombre_snap, snap_folder_id)
-        if snap_id:
-            print(f"   ✅ SNAP creado ({snap_id})", flush=True)
-            snaps_existentes.add(nombre_snap)
-            procesados += 1
-        else:
-            print(f"   ❌ Falló la subida tras {INTENTOS_MAX} intentos.", flush=True)
-            errores += 1
-            lista_errores.append(archivo["name"])
-        
+
         if i < len(archivos):
             print(f"   ⏳ Esperando {PAUSA_ENTRE_ARCH}s...", flush=True)
             time.sleep(PAUSA_ENTRE_ARCH)

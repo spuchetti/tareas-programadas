@@ -1,0 +1,57 @@
+name: Ejecutar backup diario Drive (div) -> Mega(services)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 13 * * 1-5"
+
+jobs:
+  backup:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    
+    env:
+      COMPUTERS_DRIVE_IDS: ${{ secrets.COMPUTERS_DRIVE_IDS }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Verificar runner
+        run: |
+          echo "✅ Runner disponible: ${{ runner.name }}"
+          echo "🕐 Hora del servidor: $(date)"
+
+      - name: Instalar rclone
+        run: |
+          curl https://rclone.org/install.sh | sudo bash
+          rclone version
+
+      - name: Escribir configuración de rclone
+        run: |
+          mkdir -p ~/.config/rclone
+          echo "${{ secrets.RCLONE_CONF_B64 }}" | base64 -d > ~/.config/rclone/rclone.conf
+
+      - name: Verificar remotes
+        run: |
+          rclone listremotes
+          rclone about gdrive-div: || echo "⚠️ No se pudo verificar gdrive-div"
+          rclone about mega-div-backups: || echo "⚠️ No se pudo verificar mega-div-backups"
+
+      - name: Ejecutar backup
+        run: |
+          chmod +x src/backup_drive_bot.sh
+          ./src/backup_drive_bot.sh
+
+      - name: Reportar tamaño de la papelera
+        if: always()
+        run: |
+          {
+            echo "### 📦 Tamaño de la papelera (Backups_OSER/_papelera)"
+            echo '```'
+            rclone size mega-div-backups:Backups_OSER/_papelera || echo "⚠️ No se pudo calcular el tamaño"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Mostrar finalización
+        run: echo "✅ Backup diario ejecutado correctamente."

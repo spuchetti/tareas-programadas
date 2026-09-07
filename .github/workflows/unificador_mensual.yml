@@ -12,11 +12,11 @@ on:
         required: false
         default: ''
   schedule:
-    - cron: "0 07 21 * *"   # Día 21 de cada mes a las 07 UTC (4am Argentina)
+    - cron: "40 03 21 * *"   # Día 21 de cada mes
 
 jobs:
   run-task:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
 
     env:
       GDRIVE_JSON: ${{ secrets.GDRIVE_JSON }}

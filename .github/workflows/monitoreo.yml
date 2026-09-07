@@ -4,18 +4,42 @@ name: Ejecutar bot monitoreo-liquidaciones
 # No crea archivos en Drive: lee el .xlsx actual y el snapshot (exportado),
 # y si hay cambios actualiza el CONTENIDO del snapshot existente vía
 # Sheets API. Si aparece una repartición sin snapshot todavía, la salta y
-# avisa por log — hace falta correr snapshot_builder.yml manualmente para
-# crear su snapshot inicial.
+# avisa por log.
+#
+# Desde ahora, ANTES de correr el monitoreo se ejecuta automáticamente el
+# snapshot builder (job "ejecutar-snapshot", que reutiliza snapshot_builder.yml
+# vía workflow_call) para que cualquier repartición nueva tenga su snapshot
+# inicial creado sin depender de acordarse de correr snapshot_builder.yml a
+# mano. Los snapshots que ya existen se saltean solos, así que este paso
+# extra es rápido salvo que haya reparticiones realmente nuevas.
+#
+# Si el snapshot builder falla (job completo, no una repartición puntual),
+# el monitoreo NO corre y el run queda en rojo en Actions. Esto es
+# intencional: un fallo del snapshot builder (credenciales OAuth vencidas,
+# Drive caído, etc.) tiene que ser visible y revisado, no quedar tapado por
+# un monitoreo en verde que dio la casualidad de no necesitar ningún
+# snapshot nuevo esa corrida.
+#
+# La tolerancia a "esta repartición puntual todavía no tiene snapshot" sigue
+# viviendo donde tiene que vivir: adentro de monitoreo_bot.py, por archivo
+# (una repartición nueva sin snapshot se saltea y avisa por log, sin afectar
+# a las demás). Eso es independiente de si el job del snapshot builder salió
+# bien o mal.
 
 on:
   workflow_dispatch:   # Ejecución manual desde GitHub Actions
-  #schedule:
-   # - cron: "0 17 * * *"   # 17hs UTC = 14hs Argentina (todos los días)
+  schedule:
+   - cron: "20 03 * * 1-5"
 
 jobs:
+  ejecutar-snapshot:
+    uses: ./.github/workflows/snapshot_builder.yml
+    secrets: inherit
+
   run-task:
-    runs-on: ubuntu-latest
-    timeout-minutes: 120   # 2 horas de margen (reparticiones pueden ser muchas)
+    needs: ejecutar-snapshot
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180   # 2 horas de margen (reparticiones pueden ser muchas)
 
     env:
       GDRIVE_JSON:          ${{ secrets.GDRIVE_JSON }}
