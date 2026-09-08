@@ -14,7 +14,7 @@ acá. No se redefine ni se copia el valor en otro archivo.
 """
 
 # Carpeta con todas las reparticiones (.xlsx) a monitorear
-FOLDER_REPARTICIONES_ID = "1_Xb2jrtr3Sjwi8-2nhT2k53KZ6CLE5hJ"
+FOLDER_REPARTICIONES_ID = "1fCsvF2vMHICZgnP7Ww6KumBkoPU467oW" #"1_Xb2jrtr3Sjwi8-2nhT2k53KZ6CLE5hJ"
 
 # Carpeta interna: contiene _snapshots_liquidaciones y las planillas
 # _registro_agentes_N
