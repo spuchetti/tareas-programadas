@@ -36,7 +36,11 @@ from utils.auth_utils import (
 )
 from utils.registro_utils import verificar_y_ampliar_capacidad
 from utils.drive_utils import request_drive_con_reintentos
-from utils.config_drive import FOLDER_REPARTICIONES_ID, FOLDER_SERVICES_ID
+from utils.config_drive import (
+    FOLDER_REPARTICIONES_ID_SNAPSHOT,
+    FOLDER_REPARTICIONES_ID_MONITOREO,
+    FOLDER_SERVICES_ID,
+)
 
 # ---------------------------------------------------------------------------
 # Configuración
@@ -45,11 +49,34 @@ from utils.config_drive import FOLDER_REPARTICIONES_ID, FOLDER_SERVICES_ID
 # snapshot_bot es el ÚNICO proceso del proyecto que usa OAuth
 # (services.aportes.oser@gmail.com) en vez de la Service Account, porque es
 # el único que necesita CREAR archivos nuevos en Drive (snapshots y, cuando
-# hace falta, nuevas planillas de registro). Se ejecuta solo manualmente
-# (workflow_dispatch), cuando se sabe que hay reparticiones nuevas para
-# crear — no tiene trigger automático.
+# hace falta, nuevas planillas de registro).
 #
-# FOLDER_REPARTICIONES_ID y FOLDER_SERVICES_ID viven en utils/config_drive.py
+# Tiene DOS formas de dispararse (ver snapshot_builder.yml):
+#   a) workflow_dispatch, manual y suelto -- cuando se sabe que hay
+#      reparticiones nuevas para crear.
+#   b) workflow_call, como paso previo DENTRO de monitoreo.yml -- para que
+#      las reparticiones nuevas tengan snapshot creado antes de que
+#      monitoreo_bot.py las compare en la misma corrida.
+#
+# La carpeta de reparticiones a mirar depende de CUÁL de los dos casos es:
+# en (a) usa FOLDER_REPARTICIONES_ID_SNAPSHOT (su propio ID, independiente
+# de los demás bots); en (b) tiene que usar la MISMA carpeta que va a usar
+# monitoreo_bot.py en esa corrida (FOLDER_REPARTICIONES_ID_MONITOREO) -- si
+# usara una carpeta distinta, una repartición nueva en la carpeta de
+# monitoreo nunca tendría snapshot, y monitoreo_bot.py la saltearía en
+# silencio corrida tras corrida.
+#
+# snapshot_builder.yml decide cuál caso es (según si lo llamó monitoreo.yml
+# o no) y lo comunica acá vía la env var USAR_CARPETA_MONITOREO -- NO
+# duplicando el ID de la carpeta en el YAML, que rompería la fuente única
+# de verdad de config_drive.py.
+USAR_CARPETA_MONITOREO = os.getenv("USAR_CARPETA_MONITOREO", "false").strip().lower() == "true"
+FOLDER_REPARTICIONES_ID = (
+    FOLDER_REPARTICIONES_ID_MONITOREO if USAR_CARPETA_MONITOREO
+    else FOLDER_REPARTICIONES_ID_SNAPSHOT
+)
+
+# FOLDER_REPARTICIONES_ID_* y FOLDER_SERVICES_ID viven en utils/config_drive.py
 # (única fuente de verdad, compartida con monitoreo_utils.py y
 # registro_utils.py). No redefinir acá.
 

@@ -15,7 +15,7 @@ from datetime import datetime
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
-from utils.config_drive import FOLDER_REPARTICIONES_ID, FOLDER_SERVICES_ID
+from utils.config_drive import FOLDER_REPARTICIONES_ID_MONITOREO, FOLDER_SERVICES_ID
 from utils.common_utils import ejecutar_con_reintentos_sheets
 
 
@@ -24,7 +24,7 @@ from utils.common_utils import ejecutar_con_reintentos_sheets
 # ---------------------------------------------------------------------------
 
 CONFIG = {
-    "CARPETA_REPARTICIONES_ID": FOLDER_REPARTICIONES_ID,
+    "CARPETA_REPARTICIONES_ID": FOLDER_REPARTICIONES_ID_MONITOREO,
     "CARPETA_SERVICES_ID": FOLDER_SERVICES_ID,
     "CARPETA_SNAPSHOTS": "_snapshots_liquidaciones",
     "NOMBRE_REGISTRO": "_registro_agentes",

@@ -13,6 +13,15 @@ name: Ejecutar bot monitoreo-liquidaciones
 # mano. Los snapshots que ya existen se saltean solos, así que este paso
 # extra es rápido salvo que haya reparticiones realmente nuevas.
 #
+# Se le pasa usar_carpeta_monitoreo: true para que en ESTA corrida mire la
+# misma carpeta de reparticiones que va a usar el monitoreo
+# (FOLDER_REPARTICIONES_ID_MONITOREO en config_drive.py), no su propio
+# FOLDER_REPARTICIONES_ID_SNAPSHOT independiente -- si mirara una carpeta
+# distinta, una repartición nueva en la carpeta de monitoreo nunca tendría
+# snapshot creado acá, y monitoreo_bot.py la saltearía en silencio corrida
+# tras corrida. Al dispararse suelto (workflow_dispatch, sin este input)
+# vuelve a usar su propio ID independiente.
+#
 # Si el snapshot builder falla (job completo, no una repartición puntual),
 # el monitoreo NO corre y el run queda en rojo en Actions. Esto es
 # intencional: un fallo del snapshot builder (credenciales OAuth vencidas,
@@ -34,6 +43,8 @@ on:
 jobs:
   ejecutar-snapshot:
     uses: ./.github/workflows/snapshot_builder.yml
+    with:
+      usar_carpeta_monitoreo: true
     secrets: inherit
 
   run-task:

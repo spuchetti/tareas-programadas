@@ -17,6 +17,18 @@ name: Ejecutar bot snapshot-builder
 on:
   workflow_dispatch:   # Manual, suelto
   workflow_call:        # Invocable como job previo desde otros workflows
+    inputs:
+      usar_carpeta_monitoreo:
+        description: >
+          Si es true, este snapshot builder usa la MISMA carpeta de
+          reparticiones que monitoreo.yml en vez de su propio
+          FOLDER_REPARTICIONES_ID_SNAPSHOT independiente. Pensado
+          únicamente para cuando monitoreo.yml lo llama como paso previo
+          en la misma corrida (ver el docstring de snapshot_bot.py) --
+          no pasar true al dispararlo manual/suelto.
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   run-task:
@@ -54,6 +66,8 @@ jobs:
 
       - name: Ejecutar snapshot builder
         run: python -u src/snapshot_bot.py
+        env:
+          USAR_CARPETA_MONITOREO: ${{ inputs.usar_carpeta_monitoreo }}
 
       - name: Mostrar finalización
         run: echo "✅ Snapshot builder ejecutado."

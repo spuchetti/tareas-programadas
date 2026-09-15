@@ -24,6 +24,13 @@ Por qué existe:
   de CONCEPTOS_SIT_REVISTA (monitoreo_utils.py), quedando solo definir a
   mano el concepto canónico de cada una.
 
+Usa deliberadamente FOLDER_REPARTICIONES_ID_MONITOREO (la misma constante
+que monitoreo_bot.py) en vez de tener su propio ID independiente: este
+diagnóstico solo tiene sentido si mira exactamente los mismos archivos
+"Caja" que el monitoreo está comparando -- si apuntara a una carpeta
+distinta, el universo de valores relevado acá dejaría de corresponderse
+con lo que monitoreo_bot.py realmente procesa.
+
 Uso:
   python src/diagnostico_sit_revista.py
 
@@ -38,7 +45,7 @@ from collections import defaultdict
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from utils.drive_utils import inicializar_drive, obtener_archivos, descargar_archivo
-from utils.config_drive import FOLDER_REPARTICIONES_ID
+from utils.config_drive import FOLDER_REPARTICIONES_ID_MONITOREO
 from utils.monitoreo_utils import leer_hoja_xlsx, CONFIG, HOJAS_ORDEN, COL_SIT_REVISTA, CONCEPTOS_SIT_REVISTA
 from utils.excel_utils import normalizar_texto
 
@@ -61,7 +68,7 @@ def ejecutar():
         print("❌ No se pudo inicializar Drive — revisar el secret GDRIVE_JSON")
         return
 
-    archivos = obtener_archivos(drive, FOLDER_REPARTICIONES_ID)
+    archivos = obtener_archivos(drive, FOLDER_REPARTICIONES_ID_MONITOREO)
     archivos_caja = [a for a in archivos if "caja" in a["name"].lower()]
     print(f"📁 Archivos 'Caja' encontrados: {len(archivos_caja)} de {len(archivos)} totales")
 
