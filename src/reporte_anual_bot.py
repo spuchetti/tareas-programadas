@@ -30,14 +30,18 @@ from utils.common_utils import (
 from utils.drive_utils import inicializar_drive, obtener_archivos, descargar_archivo
 from utils.excel_utils import normalizar_texto
 from utils.gmail_utils import enviar_email_html_con_adjuntos, generar_html_resumen_anual
-
+from utils.config_drive import FOLDER_REPARTICIONES_ID
 
 # ---------------------------------------------------------------------------
 # Configuracion
 # ---------------------------------------------------------------------------
 
+# Si se deja vacío el input "anio" en workflow_dispatch (uso normal, mes
+# automático), ANIO_OVERRIDE llega como "" y no como número. int("") tira
+# ValueError, así que hay que resolver el fallback acá en vez de asumir
+# que siempre viene seteado.
 _anio_override = os.getenv("ANIO_OVERRIDE", "").strip()
-ANIO_ACTUAL = int(_anio_override)
+ANIO_ACTUAL = int(_anio_override) if _anio_override else datetime.now().year
 
 MESES = ["01", "02", "03", "04", "05", "06", "1° sac", "07", "08", "09", "10", "11","2° sac", "12"]
 
@@ -245,7 +249,7 @@ def ejecutar_principal():
     if not drive:
         return
 
-    archivos = obtener_archivos(drive)
+    archivos = obtener_archivos(drive, FOLDER_REPARTICIONES_ID)
     if not archivos:
         print("✘ No se encontraron archivos.")
         return

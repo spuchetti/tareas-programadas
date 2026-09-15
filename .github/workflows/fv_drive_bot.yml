@@ -3,11 +3,11 @@ name: Ejecutar bot fv-drive-automatico
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 08 21 * *"   # Día 21 de cada mes a las 08 UTC (5am Argentina)
+    - cron: "40 04 21 * *"   # Día 21 de cada mes
 
 jobs:
   run-task:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
 
     env:
       GDRIVE_JSON: ${{ secrets.GDRIVE_JSON }}

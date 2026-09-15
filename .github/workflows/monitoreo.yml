@@ -1,0 +1,77 @@
+name: Ejecutar bot monitoreo-liquidaciones
+
+# Corre 100% con Service Account (GDRIVE_JSON) — no necesita OAuth.
+# No crea archivos en Drive: lee el .xlsx actual y el snapshot (exportado),
+# y si hay cambios actualiza el CONTENIDO del snapshot existente vía
+# Sheets API. Si aparece una repartición sin snapshot todavía, la salta y
+# avisa por log.
+#
+# Desde ahora, ANTES de correr el monitoreo se ejecuta automáticamente el
+# snapshot builder (job "ejecutar-snapshot", que reutiliza snapshot_builder.yml
+# vía workflow_call) para que cualquier repartición nueva tenga su snapshot
+# inicial creado sin depender de acordarse de correr snapshot_builder.yml a
+# mano. Los snapshots que ya existen se saltean solos, así que este paso
+# extra es rápido salvo que haya reparticiones realmente nuevas.
+#
+# Si el snapshot builder falla (job completo, no una repartición puntual),
+# el monitoreo NO corre y el run queda en rojo en Actions. Esto es
+# intencional: un fallo del snapshot builder (credenciales OAuth vencidas,
+# Drive caído, etc.) tiene que ser visible y revisado, no quedar tapado por
+# un monitoreo en verde que dio la casualidad de no necesitar ningún
+# snapshot nuevo esa corrida.
+#
+# La tolerancia a "esta repartición puntual todavía no tiene snapshot" sigue
+# viviendo donde tiene que vivir: adentro de monitoreo_bot.py, por archivo
+# (una repartición nueva sin snapshot se saltea y avisa por log, sin afectar
+# a las demás). Eso es independiente de si el job del snapshot builder salió
+# bien o mal.
+
+on:
+  workflow_dispatch:   # Ejecución manual desde GitHub Actions
+  schedule:
+   - cron: "20 03 * * 1-5"
+
+jobs:
+  ejecutar-snapshot:
+    uses: ./.github/workflows/snapshot_builder.yml
+    secrets: inherit
+
+  run-task:
+    needs: ejecutar-snapshot
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180   # 2 horas de margen (reparticiones pueden ser muchas)
+
+    env:
+      GDRIVE_JSON:          ${{ secrets.GDRIVE_JSON }}
+      SMTP_TO_MONITOREO:    ${{ secrets.SMTP_TO_MONITOREO }}
+      SMTP_FROM:            ${{ secrets.SMTP_FROM }}
+      SMTP_PASSWORD:        ${{ secrets.SMTP_PASSWORD }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Mostrar hora actual del servidor
+        run: date
+
+      - name: Instalar Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias
+        run: |
+          pip install --upgrade pip
+          pip install \
+            google-api-python-client==2.121.0 \
+            google-auth==2.29.0 \
+            google-auth-oauthlib==1.2.0 \
+            google-auth-httplib2==0.2.0 \
+            httplib2==0.22.0 \
+            openpyxl==3.1.2
+
+      - name: Ejecutar bot de monitoreo
+        run: python src/monitoreo_bot.py
+
+      - name: Mostrar finalización
+        run: echo "✅ Bot de monitoreo ejecutado."

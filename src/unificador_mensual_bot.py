@@ -41,6 +41,7 @@ from utils.gmail_utils import (
     enviar_email_html_con_adjuntos, 
     generar_html_resumen_unificador
 )
+from utils.config_drive import FOLDER_REPARTICIONES_ID
 
 # Configuración
 # Permite override manual vía workflow_dispatch inputs (MES_OVERRIDE y ANIO_OVERRIDE) por formulario UI.
@@ -295,7 +296,7 @@ def extraer_datos_excel(fh, nombre_archivo, hoja_mes):
                 print(f"     Col 25 (Código): '{primera_fila[24]}'")
             
             # Mostrar ejemplo de conversión
-            if len(primera_fila) > 3 and "á" in primera_fila[3] or "é" in primera_fila[3] or "í" in primera_fila[3] or "ó" in primera_fila[3] or "ú" in primera_fila[3]:
+            if len(primera_fila) > 3 and any(c in primera_fila[3] for c in ("á", "é", "í", "ó", "ú")):
                 print(f"     ✅ Ejemplo de conversión de tildes aplicado correctamente")
         
         return datos_extraidos
@@ -702,7 +703,7 @@ def calcular_sumatorias_datos(datos_excel):
     
     return sumatorias
 
-def extraer_y_preparar_datos_mes_periodo(drive, archivos_excel, periodo):
+def extraer_y_preparar_datos_mes_periodo(drive, archivos_excel, periodo, anio_actual=None):
     """
     Versión modificada que verifica consistencia
     AHORA INCLUYE CÓDIGO EN LOS DATOS EXTRAÍDOS Y REPORTE DE APORTANTES.
@@ -953,7 +954,7 @@ def extraer_y_preparar_datos_mes_periodo(drive, archivos_excel, periodo):
         
         # Guardar archivo CSV
         mes_formateado = nombre_mes(periodo)
-        anio_calculado = obtener_anio(periodo)
+        anio_calculado = anio_actual if anio_actual is not None else obtener_anio(periodo)
         nombre_reporte = f"Aportantes_{mes_formateado}{anio_calculado}.csv"
         carpeta = crear_directorio_salida()
         ruta_reporte = os.path.join(carpeta, nombre_reporte)
@@ -967,8 +968,8 @@ def extraer_y_preparar_datos_mes_periodo(drive, archivos_excel, periodo):
             # Fila de totales al pie
             suma_reparticiones = sum(cantidad for _, _, cantidad in datos_reporte_aportantes)
             f.write(f"|||\n")
-            f.write(f"TOTAL|Total aportantes|{suma_reparticiones}\n")
-            f.write(f"TOTAL|Total aportantes unicos|{total_dnis_unicos_periodo}\n")
+            f.write(f"|Total aportantes:|{suma_reparticiones}\n")
+            f.write(f"|Total aportantes unicos:|{total_dnis_unicos_periodo}\n")
         
         print(f"\n✅ Reporte de aportantes guardado: {nombre_reporte}")
         print(f"   Total reparticiones: {len(datos_reporte_aportantes)}")
@@ -1076,7 +1077,7 @@ def ejecutar_principal():
     
     # 2. Obtener archivos Excel
     print("📁 Buscando archivos Excel en Drive...")
-    archivos = obtener_archivos(drive)
+    archivos = obtener_archivos(drive, FOLDER_REPARTICIONES_ID)
     
     # Filtrar solo Excel
     archivos_excel = []
@@ -1177,7 +1178,7 @@ def ejecutar_principal():
 
         # 4. Extraer datos de este período específico con sumatorias directas (AHORA 9 VALORES)
         datos_periodo, archivos_procesados, filas_periodo, errores, sumatorias_por_tipo, sumatorias_directas, aportantes_periodo, ruta_reporte_periodo, dnis_unicos_periodo = extraer_y_preparar_datos_mes_periodo(
-            drive, archivos_excel, periodo
+            drive, archivos_excel, periodo, anio_actual
         )
         
         # Guardar las sumatorias
