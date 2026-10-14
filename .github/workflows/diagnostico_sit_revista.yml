@@ -1,0 +1,63 @@
+name: Diagnostico sit. revista (Cajas)
+
+# Auditoría PERIÓDICA, separada del monitoreo diario/regular.
+# Recorre todos los archivos "Caja" y lista los valores distintos que
+# aparecen hoy en la columna "06-sit. revista", con frecuencia y ejemplo
+# de dónde aparece cada uno — sirve para pescar variantes nuevas que
+# todavía no están en CONCEPTOS_SIT_REVISTA (utils/monitoreo_utils.py)
+# antes de que lleguen a afectar el agrupamiento ordinaria/complementaria
+# de algún agente.
+#
+# Deliberadamente NO corre como paso del bot de monitoreo: repite la
+# descarga y lectura de los mismos archivos "Caja" que monitoreo_bot.py ya
+# procesa en su propia corrida, así que sumarlo ahí duplicaría descargas y
+# tiempo de ejecución sin necesidad. Solo lee (no modifica nada en Drive
+# ni en los snapshots), así que puede correr en cualquier momento sin
+# pisarse con el monitoreo.
+#
+# Es de solo lectura: no envía mail (por ahora) — el resultado queda en el
+# log de este run de Actions. Si en algún momento se quiere un mail con el
+# resumen, hay que sumar los secrets SMTP_* (ver monitoreo.yml) y una
+# función de envío en gmail_utils.py.
+
+on:
+  workflow_dispatch:   # Ejecución manual desde GitHub Actions
+  schedule:
+    - cron: "0 01 1 * *"   # 07hs UTC = 4am Argentina, el día 1 de cada mes
+
+jobs:
+  run-task:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+
+    env:
+      GDRIVE_JSON: ${{ secrets.GDRIVE_JSON }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Mostrar hora actual del servidor
+        run: date
+
+      - name: Instalar Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias
+        run: |
+          pip install --upgrade pip
+          pip install \
+            google-api-python-client==2.121.0 \
+            google-auth==2.29.0 \
+            google-auth-oauthlib==1.2.0 \
+            google-auth-httplib2==0.2.0 \
+            httplib2==0.22.0 \
+            openpyxl==3.1.2
+
+      - name: Ejecutar diagnóstico sit. revista
+        run: python src/diagnostico_sit_revista.py
+
+      - name: Mostrar finalización
+        run: echo "✅ Diagnóstico de sit. revista ejecutado — revisar el log arriba."
