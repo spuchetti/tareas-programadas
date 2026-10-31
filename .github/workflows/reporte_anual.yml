@@ -73,7 +73,7 @@ jobs:
         with:
           name: reporte-anual-${{ github.event.inputs.anio || 'auto' }}
           path: generados/*.xlsx
-          retention-days: 60
+          retention-days: 3
 
       - name: Mostrar finalización
         run: |

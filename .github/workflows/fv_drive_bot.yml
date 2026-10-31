@@ -47,7 +47,7 @@ jobs:
         with:
           name: excels-fv-generados
           path: generados/**/*
-          retention-days: 15
+          retention-days: 3
 
       - name: Mostrar finalización
         run: echo "✅ Bot de fondo voluntario ejecutado correctamente."

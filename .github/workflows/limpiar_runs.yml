@@ -12,7 +12,8 @@ name: Limpiar runs de Actions
 on:
   workflow_dispatch:      # Para probarlo o dispararlo a mano cuando quieras
   schedule:
-    - cron: "0 01 1 * *"  # Día 1 de cada mes, 06 UTC (3am Argentina)
+    # Semanal: baja el pico de storage de artifacts entre limpiezas (plan Free).
+    - cron: "0 1 * * 1"   # Lunes 01:00 UTC (22:00 domingo Argentina)
 
 permissions:
   actions: write

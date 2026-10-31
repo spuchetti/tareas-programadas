@@ -86,7 +86,7 @@ jobs:
         with:
           name: unificado-mensual-${{ steps.fecha.outputs.yyyymm }}
           path: generados/*.csv
-          retention-days: 30
+          retention-days: 3
 
       - name: Mostrar finalización
         run: |
