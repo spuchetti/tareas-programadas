@@ -160,7 +160,35 @@ def limpiar_registro_reparticion(sheets_sa, drive_sa, nombre_xlsx):
     return limpiadas
 
 
-def regenerar(nombre_xlsx):
+def regenerar_snap_archivo(drive, snap_folder_id, archivo):
+    """
+    Borra el SNAP previo (si existe) y lo recrea desde `archivo`
+    (dict con id/name/mimeType del .xlsx en reparticiones).
+
+    No toca el registro de agentes. Devuelve el id del SNAP nuevo, o None
+    si falló la descarga/subida.
+    """
+    nombre_base = archivo["name"].replace(".xlsx", "").replace(".XLSX", "")
+    nombre_snap = f"{SNAP_PREFIX}{nombre_base}"
+
+    _borrar_snaps(drive, snap_folder_id, nombre_snap)
+
+    print(f"   ⬇️  Descargando {archivo['name']} ({archivo['id']})...", flush=True)
+    fh = descargar_bytes(drive, archivo["id"], archivo["mimeType"])
+    if not fh:
+        print("   ❌ No se pudo descargar el .xlsx", flush=True)
+        return None
+
+    print(f"   ⬆️  Subiendo como Google Sheets '{nombre_snap}'...", flush=True)
+    snap_id = subir_como_gsheet(drive, fh, nombre_snap, snap_folder_id)
+    if not snap_id:
+        print("   ❌ Falló la creación del SNAP", flush=True)
+        return None
+    print(f"   ✅ SNAP nuevo: {snap_id}", flush=True)
+    return snap_id
+
+
+def regenerar(nombre_xlsx, limpiar_registro=True):
     nombre_xlsx = _normalizar_nombre_xlsx(nombre_xlsx)
     if not nombre_xlsx:
         print("❌ Falta el nombre del archivo .xlsx de la repartición", flush=True)
@@ -170,7 +198,10 @@ def regenerar(nombre_xlsx):
     nombre_snap = f"{SNAP_PREFIX}{nombre_base}"
 
     print("=" * 60, flush=True)
-    print("🔄 REGENERAR SNAP + LIMPIAR REGISTRO", flush=True)
+    print(
+        "🔄 REGENERAR SNAP" + (" + LIMPIAR REGISTRO" if limpiar_registro else ""),
+        flush=True,
+    )
     print(f"   Archivo: {nombre_xlsx}", flush=True)
     print(f"   SNAP:    {nombre_snap}", flush=True)
     print("=" * 60, flush=True)
@@ -181,11 +212,8 @@ def regenerar(nombre_xlsx):
         print(f"❌ {e}", flush=True)
         return 1
 
-    print("\n[1/3] Borrando SNAP previo...", flush=True)
+    print("\n[1/2] Borrando SNAP previo y recreando...", flush=True)
     snap_folder_id = obtener_o_crear_carpeta_snaps(drive_oauth)
-    _borrar_snaps(drive_oauth, snap_folder_id, nombre_snap)
-
-    print("\n[2/3] Recreando SNAP desde el .xlsx de reparticiones...", flush=True)
     archivo = _buscar_xlsx_reparticion(drive_oauth, nombre_xlsx)
     if not archivo:
         print(
@@ -195,33 +223,27 @@ def regenerar(nombre_xlsx):
         )
         return 1
 
-    print(f"   ⬇️  Descargando {archivo['name']} ({archivo['id']})...", flush=True)
-    fh = descargar_bytes(drive_oauth, archivo["id"], archivo["mimeType"])
-    if not fh:
-        print("❌ No se pudo descargar el .xlsx", flush=True)
-        return 1
-
-    print(f"   ⬆️  Subiendo como Google Sheets '{nombre_snap}'...", flush=True)
-    snap_id = subir_como_gsheet(drive_oauth, fh, nombre_snap, snap_folder_id)
+    snap_id = regenerar_snap_archivo(drive_oauth, snap_folder_id, archivo)
     if not snap_id:
-        print("❌ Falló la creación del SNAP", flush=True)
         return 1
-    print(f"   ✅ SNAP nuevo: {snap_id}", flush=True)
 
-    print("\n[3/3] Limpiando hoja en _registro_agentes...", flush=True)
-    try:
-        sheets_sa = obtener_sheets_service_sa()
-        drive_sa = obtener_drive_service_sa()
-        limpiar_registro_reparticion(sheets_sa, drive_sa, nombre_xlsx)
-    except CredencialesFaltantesError as e:
-        print(f"   ⚠️  Sin Service Account ({e}) — SNAP ok, registro NO limpiado", flush=True)
-    except Exception as e:
-        print(f"   ⚠️  Error limpiando registro: {e}", flush=True)
-        traceback.print_exc()
+    if limpiar_registro:
+        print("\n[2/2] Limpiando hoja en _registro_agentes...", flush=True)
+        try:
+            sheets_sa = obtener_sheets_service_sa()
+            drive_sa = obtener_drive_service_sa()
+            limpiar_registro_reparticion(sheets_sa, drive_sa, nombre_xlsx)
+        except CredencialesFaltantesError as e:
+            print(f"   ⚠️  Sin Service Account ({e}) — SNAP ok, registro NO limpiado", flush=True)
+        except Exception as e:
+            print(f"   ⚠️  Error limpiando registro: {e}", flush=True)
+            traceback.print_exc()
+    else:
+        print("\n[2/2] Registro no tocado (solo SNAP).", flush=True)
 
     print(
         "\n✅ Listo. La próxima corrida de monitoreo va a comparar contra el SNAP "
-        "recién creado y va a volver a cargar el registro con CUIL buenos.",
+        "recién creado.",
         flush=True,
     )
     time.sleep(PAUSA_ENTRE_ARCH)

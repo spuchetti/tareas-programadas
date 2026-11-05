@@ -1,0 +1,45 @@
+name: Regenerar todos los snaps
+
+# Borra y recrea el SNAP de CADA repartición desde el .xlsx actual.
+# NO toca _registro_agentes (ver regenerar_todos_snaps.py).
+#
+# Puede tardar horas según la cantidad de archivos; timeout alto a propósito.
+# Requiere OAuth (borrar/crear SNAPs).
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run-task:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+
+    env:
+      OAUTH_REFRESH_TOKEN: ${{ secrets.OAUTH_REFRESH_TOKEN }}
+      GDRIVE_JSON:         ${{ secrets.GDRIVE_JSON }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Instalar Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias
+        run: |
+          pip install --upgrade pip
+          pip install \
+            google-api-python-client==2.121.0 \
+            google-auth==2.29.0 \
+            google-auth-oauthlib==1.2.0 \
+            google-auth-httplib2==0.2.0 \
+            httplib2==0.22.0 \
+            openpyxl==3.1.2
+
+      - name: Regenerar todos los SNAPs
+        run: python -u src/regenerar_todos_snaps.py
+
+      - name: Mostrar finalización
+        run: echo "✅ Regeneración masiva ejecutada."
