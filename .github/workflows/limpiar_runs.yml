@@ -13,7 +13,7 @@ on:
   workflow_dispatch:      # Para probarlo o dispararlo a mano cuando quieras
   schedule:
     # Semanal: baja el pico de storage de artifacts entre limpiezas (plan Free).
-    - cron: "0 1 * * 1"   # Lunes 01:00 UTC (22:00 domingo Argentina)
+    - cron: "0 8 * * 1"   # Lunes 08:00 UTC = 05:00 Argentina
 
 permissions:
   actions: write

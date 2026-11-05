@@ -3,7 +3,7 @@ name: Ejecutar backup diario Drive (div) -> Mega(services)
 on:
   workflow_dispatch:
   schedule:
-    - cron: "30 11 * * 1-5"
+    - cron: "30 17 * * 1-5"   # Lun-Vie 17:30 UTC = 14:30 Argentina
 
 jobs:
   backup:

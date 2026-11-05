@@ -38,7 +38,7 @@ name: Ejecutar bot monitoreo-liquidaciones
 on:
   workflow_dispatch:   # Ejecución manual desde GitHub Actions
   schedule:
-   - cron: "20 01 * * 1-5"
+   - cron: "30 8 * * 1-5"   # Lun-Vie 08:30 UTC = 05:30 Argentina
 
 jobs:
   ejecutar-snapshot:

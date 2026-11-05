@@ -12,7 +12,7 @@ on:
         required: false
         default: ''
   schedule:
-    - cron: "40 01 21 * *"   # Día 21 de cada mes
+    - cron: "0 9 21 * *"   # Día 21, 09:00 UTC = 06:00 Argentina
 
 jobs:
   run-task:
