@@ -476,6 +476,14 @@ def _cuil_es_confiable(cuil_l):
     mal cargado, DNIs correctamente distintos) bajo el mismo id — se
     reportaron como "complementarias" sin serlo.
 
+    También se rechazan CUILs truncados/placeholder del tipo '20230000000'
+    (5+ ceros finales). Esos valores aparecen cuando un snapshot o registro
+    perdió precisión (~5 cifras significativas: 20229754328 → 20230000000).
+    Algunos de esos truncados IGUAL pasan el checksum AFIP y, al usarse
+    como clave de matching, fusionan a decenas de agentes distintos bajo
+    un mismo id (caso real Municipio Gualeguaychú: 10 personas distintas
+    reportadas como cambios de CUIL de "BARBOZA HECTOR EDUARDO").
+
     NOTA: AFIP tiene una excepción cuando el resto da 10 (ligada al
     prefijo 23, personas físicas de tipo ambiguo) que acá NO se maneja de
     forma especial — un CUIL real que caiga en ese caso raro se
@@ -487,6 +495,9 @@ def _cuil_es_confiable(cuil_l):
         return False
     if cuil_l == cuil_l[0] * 11:
         return False
+    # Truncado / placeholder: DNI embebido prácticamente en ceros.
+    if cuil_l.endswith("00000"):
+        return False
 
     total = sum(int(d) * m for d, m in zip(cuil_l[:10], _MULT_CUIL))
     resto = total % 11
@@ -495,6 +506,16 @@ def _cuil_es_confiable(cuil_l):
         verificador_esperado = 0
 
     return verificador_esperado == int(cuil_l[10])
+
+
+def _dni_embebido_en_cuil(cuil_l):
+    """DNI (8 dígitos del medio) de un CUIL ya limpio de 11 dígitos."""
+    return (cuil_l[2:10].lstrip("0") or "0") if len(cuil_l) == 11 else ""
+
+
+def _mismo_dni(a, b):
+    """Compara DNIs ignorando ceros a la izquierda."""
+    return (str(a or "").lstrip("0") or "0") == (str(b or "").lstrip("0") or "0")
 
 
 # clave_c -> [aviso, ...]. Se acumulan en obtener_id_agente() cada vez que
@@ -583,14 +604,23 @@ def obtener_id_agente(cuil, dni, nombre, hoja_info):
     clave_c = f"{sid}__{nhoja}"
 
     cuil_l   = _limpiar_num(cuil)
+    dni_l    = _limpiar_num(dni)
+    nombre_n = _normalizar(nombre)
+
     if cuil_l and not _cuil_es_confiable(cuil_l):
         _avisos_cuil_invalido.setdefault(clave_c, []).append(
-            f"CUIL '{cuil}' inválido (checksum no coincide) — DNI {dni} ({nombre}), "
+            f"CUIL '{cuil}' inválido (checksum/truncado) — DNI {dni} ({nombre}), "
             f"se ignora como clave de matching"
         )
         cuil_l = ""
-    dni_l    = _limpiar_num(dni)
-    nombre_n = _normalizar(nombre)
+    elif cuil_l and dni_l and not _mismo_dni(_dni_embebido_en_cuil(cuil_l), dni_l):
+        # El CUIL no corresponde a ESTE DNI (dato corrupto o de otra persona).
+        # Usarlo como clave fusionaría agentes; caer a DNI es el fallback seguro.
+        _avisos_cuil_invalido.setdefault(clave_c, []).append(
+            f"CUIL '{cuil}' no coincide con DNI {dni} ({nombre}) — "
+            f"se ignora como clave de matching"
+        )
+        cuil_l = ""
 
     # Buscar en caché.
     # El fallback por nombre SOLO debe usarse cuando esta fila no trae ni
@@ -602,7 +632,23 @@ def obtener_id_agente(cuil, dni, nombre, hoja_info):
     # (caso real: "RICLE MARIA INES" con DNI 13183215 y con DNI 25287600)
     # terminaban heredando el mismo id, y el reporte de monitoreo las
     # mostraba agrupadas como si fueran una sola persona.
-    entrada = cache["porCuil"].get(cuil_l) or cache["porDni"].get(dni_l)
+    #
+    # Si porCuil y porDni apuntan a IDs distintos, o si el agente hallado
+    # por CUIL ya tiene otro DNI en caché, se prefiere el DNI: evita
+    # fusionar personas distintas que compartían un CUIL truncado/corrupto
+    # cargado en corridas anteriores (ver _cuil_es_confiable).
+    entrada_cuil = cache["porCuil"].get(cuil_l) if cuil_l else None
+    entrada_dni = cache["porDni"].get(dni_l) if dni_l else None
+    if entrada_cuil and entrada_dni and entrada_cuil["id"] != entrada_dni["id"]:
+        entrada = entrada_dni
+    elif entrada_cuil and dni_l:
+        fila_prev = next((f for f in cache["filas"] if f["id"] == entrada_cuil["id"]), None)
+        if fila_prev and fila_prev.get("dni") and not _mismo_dni(fila_prev["dni"], dni_l):
+            entrada = entrada_dni
+        else:
+            entrada = entrada_cuil
+    else:
+        entrada = entrada_cuil or entrada_dni
     if entrada is None and not cuil_l and not dni_l:
         entrada = cache["porNombre"].get(nombre_n) if nombre_n and len(nombre_n) > 3 else None
 

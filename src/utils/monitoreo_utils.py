@@ -107,23 +107,33 @@ def limpiar_numero(s):
 
 def normalizar_cuil(val, col_idx):
     """
-    Normaliza CUIL (col 0) y DNI (col 1) dejando solo los dígitos, para que
-    un cambio de formato (guiones, puntos, espacios) no se reporte como
-    "modificado" siendo el mismo número.
+    Normaliza identificadores numéricos antes de comparar, para que un
+    cambio de formato no se reporte como "modificado" siendo el mismo
+    número.
 
-    Antes esto solo sacaba "-" del CUIL y ".-espacio" del DNI con una
-    lista fija de símbolos. Formatos como "27 11312527 1" (espacios en el
-    CUIL, sin guiones) no quedaban cubiertos y se comparaban tal cual,
-    generando falsos "modificado". Como CUIL y DNI son identificadores
-    puramente numéricos, lo correcto es sacar cualquier caracter que no
-    sea dígito (0-9), sea cual sea el símbolo usado.
+    - CUIL (col 0) y DNI (col 1): deja solo dígitos. Antes esto solo
+      sacaba "-" del CUIL y ".-espacio" del DNI con una lista fija de
+      símbolos. Formatos como "27 11312527 1" (espacios en el CUIL, sin
+      guiones) no quedaban cubiertos y se comparaban tal cual, generando
+      falsos "modificado".
+    - cod. liq. (col 4): deja solo dígitos y saca ceros a la izquierda.
+      El snapshot a veces guarda "0000001828" (texto del CSV) y el
+      archivo actual "1828" (número del Excel); compararlos como string
+      generaba un falso "modificado" en casi todas las filas
+      (caso real Municipio Gualeguaychú Agosto 2026: 1401/1405).
 
     Ejemplos:
       "27-11312527-1" / "27 11312527 1" / "27113125271" -> "27113125271"
       "38-261-080"    / "38.261.080"    / "38261080"    -> "38261080"
+      "0000001828"    / "1828"                          -> "1828"
     """
     if col_idx in (0, 1):
         return re.sub(r"[^0-9]", "", val)
+    if col_idx == 4:
+        digitos = re.sub(r"[^0-9]", "", val)
+        if not digitos:
+            return val
+        return digitos.lstrip("0") or "0"
     return val
 
 

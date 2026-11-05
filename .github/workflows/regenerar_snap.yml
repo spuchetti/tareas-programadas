@@ -1,0 +1,53 @@
+name: Regenerar snap repartición
+
+# Borra el SNAP de UNA repartición, lo recrea desde el .xlsx actual y
+# limpia su hoja en _registro_agentes_N. Pensado para cuando el snapshot
+# o el registro quedaron con datos corruptos (ej. CUILs truncados) y
+# snapshot_bot.py solo no alcanza porque saltea los SNAPs ya existentes.
+#
+# Requiere OAuth (borrar/crear SNAP) + Service Account (limpiar registro).
+
+on:
+  workflow_dispatch:
+    inputs:
+      archivo_xlsx:
+        description: >
+          Nombre del .xlsx de la repartición (ej.
+          16-MUNICIPIO GUALEGUAYCHU-2026.xlsx)
+        required: true
+        type: string
+
+jobs:
+  run-task:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+
+    env:
+      OAUTH_REFRESH_TOKEN: ${{ secrets.OAUTH_REFRESH_TOKEN }}
+      GDRIVE_JSON:         ${{ secrets.GDRIVE_JSON }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Instalar Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias
+        run: |
+          pip install --upgrade pip
+          pip install \
+            google-api-python-client==2.121.0 \
+            google-auth==2.29.0 \
+            google-auth-oauthlib==1.2.0 \
+            google-auth-httplib2==0.2.0 \
+            httplib2==0.22.0 \
+            openpyxl==3.1.2
+
+      - name: Regenerar SNAP y limpiar registro
+        run: python -u src/regenerar_snap_reparticion.py "${{ inputs.archivo_xlsx }}"
+
+      - name: Mostrar finalización
+        run: echo "✅ Regeneración ejecutada."
