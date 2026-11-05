@@ -1351,9 +1351,9 @@ def generar_xlsx_cambios(modifs, elims, nuevos, periodo, reparticion, ruta_salid
         nonlocal row
         _celda(ws, row, 1, titulo, font=font_titulo)
         row += 1
-        # Prefijo Liquidación / Cod. liq. para saber de qué fila del agente se trata
-        prefijos = ["Liquidación", "Cod. liq."]
-        for ci, enc in enumerate(prefijos + list(ENCABEZADOS_EXCEL), 1):
+        # Solo "Liquidación" como prefijo: el cod. liq. ya viene en
+        # ENCABEZADOS_EXCEL como "5-cod. liq." y no hace falta duplicarlo.
+        for ci, enc in enumerate(["Liquidación"] + list(ENCABEZADOS_EXCEL), 1):
             _celda(ws, row, ci, enc, font=_FONT_HDR, fill=_FILL_HEADER, border=_BRD_N, align=_ALIGN_CTR)
         row += 1
         for i, c in enumerate(lista):
@@ -1361,10 +1361,9 @@ def generar_xlsx_cambios(modifs, elims, nuevos, periodo, reparticion, ruta_salid
             fila = c.get("fila", [])
             cant = CONFIG["COL_FIN"] - CONFIG["COL_INICIO"] + 1
             _celda(ws, row, 1, c.get("liquidacion", ""), font=font_fila, fill=fill_fila, border=brd, align=_ALIGN_LEFT)
-            _celda(ws, row, 2, c.get("cod_liq", ""), font=font_fila, fill=fill_fila, border=brd, align=_ALIGN_LEFT)
             for ci in range(cant):
                 val = fila[ci] if ci < len(fila) else None
-                col_out = ci + 3  # +2 por Liquidación/Cod.liq.
+                col_out = ci + 2  # +1 por Liquidación
                 if ci in COLS_NUMERICAS:
                     _celda(ws, row, col_out, parse_numero(val), font=font_fila, fill=fill_fila, border=brd, align=_ALIGN_CTR, num_fmt=_NUM_FMT)
                 else:
