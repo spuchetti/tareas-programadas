@@ -452,7 +452,7 @@ def _procesar_archivo_impl(archivo, carpeta_snapshots_id, drive_svc, sheets_svc_
                                    "descripcion": "Registros modificados y nuevos"})
         if hay_complementarias_csv:
             adjuntos_info.append({"es_xlsx": False, "nombre": NOMBRE_GENERICO_CSV_COMPLEMENTARIAS,
-                                   "descripcion": "Liquidación complementaria"})
+                                   "descripcion": "Todas las liquidaciones complementarias del período (no solo las modificadas)"})
         if hay_rectificativa_csv:
             adjuntos_info.append({"es_xlsx": False, "nombre": NOMBRE_GENERICO_CSV_RECTIFICATIVA,
                                    "descripcion": "Liquidación completa - solo ordinarias"})

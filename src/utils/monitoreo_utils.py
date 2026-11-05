@@ -67,6 +67,92 @@ ENCABEZADOS_EXCEL = [
 
 # Columna de sueldo sin descuentos (0-based) para separar complementarias
 COL_SUELDO_SIN_DESC = 14
+# Columna "5-cod. liq." (0-based) — identifica la liquidación dentro del agente
+COL_COD_LIQ = 4
+
+
+def _cod_liq_de_fila(fila):
+    """Código de liquidación normalizado (solo dígitos, sin ceros a la izquierda)."""
+    if not fila or len(fila) <= COL_COD_LIQ or fila[COL_COD_LIQ] is None:
+        return ""
+    digitos = re.sub(r"[^0-9]", "", str(fila[COL_COD_LIQ]).strip())
+    if not digitos:
+        return str(fila[COL_COD_LIQ]).strip()
+    return digitos.lstrip("0") or "0"
+
+
+def _etiqueta_liquidacion(es_ordinaria, concepto=None):
+    """
+    Etiqueta legible para el reporte de modificaciones.
+    En modo caja, si hay concepto (JUBILADO/PENSIONADO/...), se agrega entre
+    paréntesis para no confundir dos ordinarias legítimas del mismo agente.
+    """
+    base = "Ordinaria" if es_ordinaria else "Complementaria"
+    if concepto and concepto not in ("", "__unico__"):
+        return f"{base} ({concepto})"
+    return base
+
+
+def _meta_fila_liquidacion(fila, indice_en_grupo, concepto=None):
+    """Metadatos de liquidación para un cambio (tras reordenar ordinaria-primero)."""
+    return {
+        "liquidacion": _etiqueta_liquidacion(indice_en_grupo == 0, concepto),
+        "cod_liq": _cod_liq_de_fila(fila),
+    }
+
+
+def _alinear_complementarias_por_cod_liq(filas_act, filas_sn):
+    """
+    Tras _reordenar_ordinaria_primero (ordinaria en [0]), reordena las
+    complementarias del snapshot para emparejarlas con las del actual por
+    cod. liq. cuando hay match.
+
+    Evita falsos "modificado" si el agente tiene 2+ complementarias y solo
+    cambió el orden de aparición entre snapshot y archivo actual. Las que
+    no matchean por código quedan al final, en su orden relativo.
+    """
+    if not filas_act or not filas_sn:
+        return filas_act, filas_sn
+    if len(filas_act) <= 2 and len(filas_sn) <= 2:
+        return filas_act, filas_sn
+
+    ord_act, comps_act = filas_act[0], list(filas_act[1:])
+    ord_sn, comps_sn = filas_sn[0], list(filas_sn[1:])
+    if not comps_act or not comps_sn:
+        return filas_act, filas_sn
+
+    usados = set()
+    ordenados = []
+    for fa in comps_act:
+        cod = _cod_liq_de_fila(fa)
+        match_idx = None
+        if cod:
+            for j, fs in enumerate(comps_sn):
+                if j in usados:
+                    continue
+                if _cod_liq_de_fila(fs) == cod:
+                    match_idx = j
+                    break
+        if match_idx is not None:
+            usados.add(match_idx)
+            ordenados.append(comps_sn[match_idx])
+        else:
+            ordenados.append(None)
+
+    restantes = [fs for j, fs in enumerate(comps_sn) if j not in usados]
+    ri = 0
+    comps_sn_alineadas = []
+    for placeholder in ordenados:
+        if placeholder is not None:
+            comps_sn_alineadas.append(placeholder)
+        elif ri < len(restantes):
+            comps_sn_alineadas.append(restantes[ri])
+            ri += 1
+    while ri < len(restantes):
+        comps_sn_alineadas.append(restantes[ri])
+        ri += 1
+
+    return [ord_act] + comps_act, [ord_sn] + comps_sn_alineadas
 
 
 # ---------------------------------------------------------------------------
@@ -625,44 +711,61 @@ def comparar_hojas_normal(datos_actual, datos_snap, hoja_registro):
     mapa_snap = _indexar(datos_snap, hoja_registro, obtener_id_agente)
     mapa_act = _indexar(datos_actual, hoja_registro, obtener_id_agente)
 
-    # Eliminados completamente
+    # Eliminados completamente (agente entero ausente en el actual)
     for aid, filas in mapa_snap.items():
         if aid not in mapa_act:
-            f = filas[0]
-            dni = str(f[col_dni] if len(f) > col_dni else "").strip()
-            nombre = f[3] if len(f) > 3 else "(sin nombre)"
-            cambios.append({"tipo": "eliminado", "dni": dni, "nombre": nombre, "fila": f})
+            filas = _reordenar_ordinaria_primero(filas)
+            for i, f in enumerate(filas):
+                dni = str(f[col_dni] if len(f) > col_dni else "").strip()
+                nombre = f[3] if len(f) > 3 else "(sin nombre)"
+                meta = _meta_fila_liquidacion(f, i)
+                cambios.append({
+                    "tipo": "eliminado", "dni": dni, "nombre": nombre, "fila": f, **meta,
+                })
 
     for aid, filas_act in mapa_act.items():
+        filas_act = _reordenar_ordinaria_primero(filas_act)
         fref = filas_act[0]
         dni = str(fref[col_dni] if len(fref) > col_dni else "").strip()
         nombre = fref[3] if len(fref) > 3 else "(sin nombre)"
 
         if aid not in mapa_snap:
-            for f in filas_act:
-                cambios.append({"tipo": "nuevo", "dni": dni, "nombre": nombre, "fila": f})
+            for i, f in enumerate(filas_act):
+                meta = _meta_fila_liquidacion(f, i)
+                cambios.append({
+                    "tipo": "nuevo", "dni": dni, "nombre": nombre, "fila": f, **meta,
+                })
             continue
-
-        filas_sn = mapa_snap[aid]
 
         # Fija la fila "ordinaria" de cada lado en la posición 0 antes de
         # emparejar por índice, para no comparar ordinaria contra
         # complementaria solo por un cambio de orden en la planilla (ver
-        # docstring de _reordenar_ordinaria_primero).
-        filas_act = _reordenar_ordinaria_primero(filas_act)
-        filas_sn = _reordenar_ordinaria_primero(filas_sn)
+        # docstring de _reordenar_ordinaria_primero). Después alinea
+        # complementarias por cod. liq. cuando hay 2+ (ver
+        # _alinear_complementarias_por_cod_liq).
+        filas_sn = _reordenar_ordinaria_primero(mapa_snap[aid])
+        filas_act, filas_sn = _alinear_complementarias_por_cod_liq(filas_act, filas_sn)
 
         # Filas eliminadas (había más antes)
         for i in range(len(filas_act), len(filas_sn)):
-            cambios.append({"tipo": "eliminado", "dni": dni, "nombre": nombre, "fila": filas_sn[i]})
+            meta = _meta_fila_liquidacion(filas_sn[i], i)
+            cambios.append({
+                "tipo": "eliminado", "dni": dni, "nombre": nombre,
+                "fila": filas_sn[i], **meta,
+            })
 
         # Filas nuevas (hay más ahora)
         for i in range(len(filas_sn), len(filas_act)):
-            cambios.append({"tipo": "nuevo", "dni": dni, "nombre": nombre, "fila": filas_act[i]})
+            meta = _meta_fila_liquidacion(filas_act[i], i)
+            cambios.append({
+                "tipo": "nuevo", "dni": dni, "nombre": nombre,
+                "fila": filas_act[i], **meta,
+            })
 
         # Comparar fila a fila
         for i in range(min(len(filas_act), len(filas_sn))):
             fa, fs = filas_act[i], filas_sn[i]
+            meta = _meta_fila_liquidacion(fa, i)
             for c in range(cant_cols):
                 # OJO: guardar explícitamente contra "fa[c] is not None", no
                 # solo contra índice fuera de rango. openpyxl (archivo actual)
@@ -683,6 +786,7 @@ def comparar_hojas_normal(datos_actual, datos_snap, hoja_registro):
                         "actual": va or "(vacío)",
                         "es_no_numerico": c not in COLS_NUMERICAS,
                         "fila": fa,
+                        **meta,
                     })
 
 
@@ -890,26 +994,36 @@ def comparar_hojas_caja(datos_actual, datos_snap, hoja_registro):
             filas_c_act = conceptos_act.get(concepto, [])
             filas_c_snap = conceptos_snap.get(concepto, [])
 
+            concepto_label = None if concepto == "__unico__" else concepto
+            filas_c_act, filas_c_snap = _alinear_complementarias_por_cod_liq(
+                filas_c_act, filas_c_snap
+            )
+
             for i in range(len(filas_c_act), len(filas_c_snap)):
+                meta = _meta_fila_liquidacion(filas_c_snap[i], i, concepto_label)
                 cambios.append({
                     "tipo": "eliminado",
                     "dni": dni,
                     "nombre": nombre,
                     "registro": i + 1,
-                    "fila": filas_c_snap[i]
+                    "fila": filas_c_snap[i],
+                    **meta,
                 })
 
             for i in range(len(filas_c_snap), len(filas_c_act)):
+                meta = _meta_fila_liquidacion(filas_c_act[i], i, concepto_label)
                 cambios.append({
                     "tipo": "nuevo",
                     "dni": dni,
                     "nombre": nombre,
                     "registro": i + 1,
-                    "fila": filas_c_act[i]
+                    "fila": filas_c_act[i],
+                    **meta,
                 })
 
             for i in range(min(len(filas_c_act), len(filas_c_snap))):
                 fa, fs = filas_c_act[i], filas_c_snap[i]
+                meta = _meta_fila_liquidacion(fa, i, concepto_label)
                 for c in range(cant_cols):
                     # Ver comentario equivalente en comparar_hojas_normal:
                     # guarda contra fa[c]/fs[c] is None para no convertir
@@ -928,6 +1042,7 @@ def comparar_hojas_caja(datos_actual, datos_snap, hoja_registro):
                             "actual": va or "(vacío)",
                             "es_no_numerico": c not in COLS_NUMERICAS,
                             "fila": fa,
+                            **meta,
                         })
 
     return {"cambios": cambios, "mapa_actual": grupos_act, "avisos_conceptos": avisos_conceptos}
@@ -1056,7 +1171,11 @@ def generar_csv_modificados(modifs, nuevos, ruta):
 
 
 def generar_csv_complementarias(complementarias, ruta):
-    """Devuelve True si se escribió algo, False si no había complementarias."""
+    """
+    Escribe TODAS las complementarias actuales del período (no solo las
+    que tuvieron cambios). El mail aclara eso en la descripción del
+    adjunto. Devuelve True si se escribió algo, False si no había.
+    """
     cant_cols = CONFIG["COL_FIN"] - CONFIG["COL_INICIO"] + 1
     if not complementarias:
         return False
@@ -1136,7 +1255,10 @@ _ALIGN_CTR = Alignment(horizontal="center", vertical="center")
 _ALIGN_LEFT = Alignment(horizontal="left", vertical="center")
 _NUM_FMT = "#,##0.00"
 
-_ANCHOS = [14, 30, 22, 22, 14, 14, 14, 35] + [16] * 16
+_ANCHOS = [14, 30, 22, 12, 22, 22, 14, 14, 14, 35] + [16] * 16
+# Anchos específicos de la sección MODIFICADOS (DNI, nombre, liquidación,
+# cod. liq., campo, anterior, nuevo)
+_ANCHOS_MODIF = [14, 30, 28, 12, 22, 18, 18]
 
 
 def _celda(ws, row, col, valor, font=None, fill=None, border=None, align=None, num_fmt=None):
@@ -1170,23 +1292,36 @@ def generar_xlsx_cambios(modifs, elims, nuevos, periodo, reparticion, ruta_salid
         _celda(ws, row, 1, "REGISTROS MODIFICADOS", font=_FONT_BLUE_S)
         row += 1
 
-        hdrs = ["DNI", "Nombre y Apellido", "Campo modificado", "Valor anterior", "Valor nuevo"]
+        hdrs = [
+            "DNI", "Nombre y Apellido", "Liquidación", "Cod. liq.",
+            "Campo modificado", "Valor anterior", "Valor nuevo",
+        ]
         for c_idx, h in enumerate(hdrs, 1):
             _celda(ws, row, c_idx, h, font=_FONT_HDR, fill=_FILL_HEADER, border=_BRD_N, align=_ALIGN_CTR)
+            if c_idx <= len(_ANCHOS_MODIF):
+                ws.column_dimensions[ws.cell(1, c_idx).column_letter].width = _ANCHOS_MODIF[c_idx - 1]
         row += 1
 
-        # Agrupar por DNI
+        # Agrupar por (DNI, liquidación, cod. liq.) para que ordinaria y
+        # complementaria del mismo agente queden en bloques separados y
+        # legibles, en vez de mezclar todos los campos bajo un solo DNI.
         grupos = {}
-        orden_dni = []
+        orden_claves = []
         for c in modifs:
-            d = c["dni"]
-            if d not in grupos:
-                grupos[d] = {"nombre": c["nombre"], "cambios": []}
-                orden_dni.append(d)
-            grupos[d]["cambios"].append(c)
+            clave = (c.get("dni", ""), c.get("liquidacion", ""), c.get("cod_liq", ""))
+            if clave not in grupos:
+                grupos[clave] = {
+                    "dni": c.get("dni", ""),
+                    "nombre": c.get("nombre", ""),
+                    "liquidacion": c.get("liquidacion", ""),
+                    "cod_liq": c.get("cod_liq", ""),
+                    "cambios": [],
+                }
+                orden_claves.append(clave)
+            grupos[clave]["cambios"].append(c)
 
-        for gi, dni in enumerate(orden_dni):
-            g = grupos[dni]
+        for gi, clave in enumerate(orden_claves):
+            g = grupos[clave]
             fill = _FILL_BLUE if gi % 2 == 0 else _FILL_WHITE
             cc = g["cambios"]
             for i, c in enumerate(cc):
@@ -1196,16 +1331,18 @@ def generar_xlsx_cambios(modifs, elims, nuevos, periodo, reparticion, ruta_salid
                 idx_c = NOMBRES_COLUMNAS.index(campo) if campo in NOMBRES_COLUMNAS else -1
                 campo_label = f"{idx_c+1}-{campo}" if idx_c >= 0 else campo
 
-                _celda(ws, row, 1, dni if i == 0 else "", font=_FONT_NORMAL, fill=fill, border=brd, align=_ALIGN_LEFT)
+                _celda(ws, row, 1, g["dni"] if i == 0 else "", font=_FONT_NORMAL, fill=fill, border=brd, align=_ALIGN_LEFT)
                 _celda(ws, row, 2, g["nombre"] if i == 0 else "", font=_FONT_NORMAL, fill=fill, border=brd, align=_ALIGN_LEFT)
-                _celda(ws, row, 3, campo_label, font=_FONT_NORMAL, fill=fill, border=brd, align=_ALIGN_LEFT)
+                _celda(ws, row, 3, g["liquidacion"] if i == 0 else "", font=_FONT_NORMAL, fill=fill, border=brd, align=_ALIGN_LEFT)
+                _celda(ws, row, 4, g["cod_liq"] if i == 0 else "", font=_FONT_NORMAL, fill=fill, border=brd, align=_ALIGN_LEFT)
+                _celda(ws, row, 5, campo_label, font=_FONT_NORMAL, fill=fill, border=brd, align=_ALIGN_LEFT)
 
                 if c["es_no_numerico"]:
-                    _celda(ws, row, 4, str(c["anterior"]), font=_FONT_RED, fill=fill, border=brd, align=_ALIGN_LEFT)
-                    _celda(ws, row, 5, str(c["actual"]), font=_FONT_GREEN, fill=fill, border=brd, align=_ALIGN_LEFT)
+                    _celda(ws, row, 6, str(c["anterior"]), font=_FONT_RED, fill=fill, border=brd, align=_ALIGN_LEFT)
+                    _celda(ws, row, 7, str(c["actual"]), font=_FONT_GREEN, fill=fill, border=brd, align=_ALIGN_LEFT)
                 else:
-                    _celda(ws, row, 4, parse_numero(c["anterior"]), font=_FONT_RED, fill=fill, border=brd, align=_ALIGN_LEFT, num_fmt=_NUM_FMT)
-                    _celda(ws, row, 5, parse_numero(c["actual"]), font=_FONT_GREEN, fill=fill, border=brd, align=_ALIGN_LEFT, num_fmt=_NUM_FMT)
+                    _celda(ws, row, 6, parse_numero(c["anterior"]), font=_FONT_RED, fill=fill, border=brd, align=_ALIGN_LEFT, num_fmt=_NUM_FMT)
+                    _celda(ws, row, 7, parse_numero(c["actual"]), font=_FONT_GREEN, fill=fill, border=brd, align=_ALIGN_LEFT, num_fmt=_NUM_FMT)
                 row += 1
         row += 1
 
@@ -1214,19 +1351,24 @@ def generar_xlsx_cambios(modifs, elims, nuevos, periodo, reparticion, ruta_salid
         nonlocal row
         _celda(ws, row, 1, titulo, font=font_titulo)
         row += 1
-        for ci, enc in enumerate(ENCABEZADOS_EXCEL, 1):
+        # Prefijo Liquidación / Cod. liq. para saber de qué fila del agente se trata
+        prefijos = ["Liquidación", "Cod. liq."]
+        for ci, enc in enumerate(prefijos + list(ENCABEZADOS_EXCEL), 1):
             _celda(ws, row, ci, enc, font=_FONT_HDR, fill=_FILL_HEADER, border=_BRD_N, align=_ALIGN_CTR)
         row += 1
         for i, c in enumerate(lista):
             brd = _BRD_B if i == len(lista) - 1 else _BRD_N
             fila = c.get("fila", [])
             cant = CONFIG["COL_FIN"] - CONFIG["COL_INICIO"] + 1
+            _celda(ws, row, 1, c.get("liquidacion", ""), font=font_fila, fill=fill_fila, border=brd, align=_ALIGN_LEFT)
+            _celda(ws, row, 2, c.get("cod_liq", ""), font=font_fila, fill=fill_fila, border=brd, align=_ALIGN_LEFT)
             for ci in range(cant):
                 val = fila[ci] if ci < len(fila) else None
+                col_out = ci + 3  # +2 por Liquidación/Cod.liq.
                 if ci in COLS_NUMERICAS:
-                    _celda(ws, row, ci+1, parse_numero(val), font=font_fila, fill=fill_fila, border=brd, align=_ALIGN_CTR, num_fmt=_NUM_FMT)
+                    _celda(ws, row, col_out, parse_numero(val), font=font_fila, fill=fill_fila, border=brd, align=_ALIGN_CTR, num_fmt=_NUM_FMT)
                 else:
-                    _celda(ws, row, ci+1, str(val or ""), font=font_fila, fill=fill_fila, border=brd, align=_ALIGN_LEFT)
+                    _celda(ws, row, col_out, str(val or ""), font=font_fila, fill=fill_fila, border=brd, align=_ALIGN_LEFT)
             row += 1
         row += 1
 
