@@ -11,8 +11,6 @@ on:
         description: 'Año a procesar (ej: 2024, 2025). Dejar vacío para año automático.'
         required: false
         default: ''
-  schedule:
-    - cron: "0 9 21 * *"   # Día 21, 09:00 UTC = 06:00 Argentina
 
 jobs:
   run-task:

@@ -2,8 +2,6 @@ name: Ejecutar bot fv-drive-automatico
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 10 21 * *"   # Día 21, 10:00 UTC = 07:00 Argentina
 
 jobs:
   run-task:
