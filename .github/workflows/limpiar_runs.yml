@@ -10,10 +10,7 @@ name: Limpiar runs de Actions
 #   - runs que estén "in_progress" o "queued" (en curso)
 
 on:
-  workflow_dispatch:      # Para probarlo o dispararlo a mano cuando quieras
-  schedule:
-    # Semanal: baja el pico de storage de artifacts entre limpiezas (plan Free).
-    - cron: "0 8 * * 1"   # Lunes 08:00 UTC = 05:00 Argentina
+  workflow_dispatch:      # Para probarlo o dispararlo a mano cuando quieras (y para Cron-job.org)
 
 permissions:
   actions: write
